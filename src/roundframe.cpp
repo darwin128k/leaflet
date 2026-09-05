@@ -520,6 +520,64 @@ static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int 
     }
 }
 
+/* Capsule of height h (even): semicircle caps of radius h/2 on both ends.
+ * CornerInset() is for large dialog radii and returns 0 on a 6px bar. */
+static int PillInset(int y, int h)
+{
+    int dy;
+    int inner;
+    int half;
+    int r;
+    if (h < 2) {
+        return 0;
+    }
+    r = h / 2;
+    dy = y * 2 + 1 - h;
+    inner = h * h - dy * dy;
+    if (inner <= 0) {
+        return r;
+    }
+    half = (ISqrt(inner) + 1) / 2;
+    if (half > r) {
+        half = r;
+    }
+    return r - half;
+}
+
+static void DrawPillAt(int x0, int y0, int w, int h, unsigned int packedRgba)
+{
+    int y;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    if ((h & 1) != 0) {
+        h -= 1;
+    }
+    if (h < 2) {
+        SurfaceFill(x0, y0, x0 + w, y0 + h, packedRgba);
+        return;
+    }
+    for (y = 0; y < h; y++) {
+        int inset = PillInset(y, h);
+        int xL;
+        int xR;
+        if (inset < 0) {
+            inset = 0;
+        }
+        if (inset * 2 >= w) {
+            inset = (w - 1) / 2;
+            if (inset < 0) {
+                continue;
+            }
+        }
+        xL = x0 + inset;
+        xR = x0 + w - inset;
+        if (xR > xL) {
+            SurfaceFill(xL, y0 + y, xR, y0 + y + 1, packedRgba);
+        }
+    }
+}
+
 static void __fastcall DrawSetColor_Hook(void *surf, void *edx, unsigned int packedRgba)
 {
     (void)edx;
@@ -842,7 +900,6 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
     int w = 0, h = 0;
     int barH;
     int y;
-    int r;
     int fillW;
     float p;
 
@@ -868,29 +925,29 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
     if (p > 1.0f) {
         p = 1.0f;
     }
-    /* Same 6px pill as overlay.cpp prefetch lv_bar (BTN_H). */
-    barH = 6;
+    /* 12px stadium — same height as overlay.cpp BTN_H. 6px was a 1px
+     * chamfer that read as a rectangle plus a dirty seam on the leading edge. */
+    barH = 12;
     if (barH > h - 2) {
         barH = h - 2;
     }
-    if (barH < 3) {
+    if (barH < 4) {
         barH = h;
     }
-    y = (h - barH) / 2;
-    r = 3;
-    if (r * 2 > barH) {
-        r = barH / 2;
+    if ((barH & 1) != 0) {
+        barH -= 1;
     }
-    DrawRoundedFillAt(0, y, w, barH, r, ThemeRgbPacked(g_theme.trackRgb), 1, 1);
+    y = (h - barH) / 2;
+    DrawPillAt(0, y, w, barH, ThemeRgbPacked(g_theme.trackRgb));
     fillW = (int)(p * (float)w + 0.5f);
     if (fillW > 0) {
-        if (fillW < 4) {
-            fillW = 4;
+        if (fillW < barH) {
+            fillW = barH;
         }
         if (fillW > w) {
             fillW = w;
         }
-        DrawRoundedFillAt(0, y, fillW, barH, r, ThemeRgbPacked(g_theme.accentRgb), 1, 1);
+        DrawPillAt(0, y, fillW, barH, ThemeRgbPacked(g_theme.accentRgb));
     }
 }
 

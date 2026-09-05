@@ -40,7 +40,7 @@ void Overlay_Start(void)
 #define WIN_W_MAX      420
 #define WIN_PAD        16
 #define WIN_GAP        8
-#define BTN_H          6
+#define BTN_H          12
 
 static volatile LONG g_started = 0;
 
@@ -331,12 +331,12 @@ static void BuildUi(void)
     lv_obj_remove_flag(g_bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_color(g_bar, lv_color_hex(theme.trackRgb), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_border_width(g_bar, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(g_bar, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_color(g_bar, lv_color_hex(theme.accentRgb), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(g_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(g_bar, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(g_bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 
     lv_obj_update_layout(win);
     lv_obj_center(win);

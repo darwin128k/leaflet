@@ -1,6 +1,7 @@
 #include "roundframe.h"
 #include "scheme.h"
 #include "log.h"
+#include <math.h>
 #include <string.h>
 
 typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
@@ -106,6 +107,7 @@ static unsigned int g_edgeBodyColor = 0;
 static void EnsureSurfaceHooks(void);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
+static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
 {
@@ -954,9 +956,15 @@ static void PaintMacCloseDot(void *thisPtr)
         w = 16;
         h = 16;
     }
-    d = 12;
+    d = 10;
     ox = (w - d) / 2;
     oy = (h - d) / 2;
+    if (ox < 0) {
+        ox = 0;
+    }
+    if (oy < 0) {
+        oy = 0;
+    }
     EnsureSurfaceHooks();
     if (VtableFlag(thisPtr, OFF_BUTTON_ISDEPRESSED_VT)) {
         rgb = 0xBF4942u;
@@ -965,7 +973,57 @@ static void PaintMacCloseDot(void *thisPtr)
     } else {
         rgb = 0xFF5F57u;
     }
-    DrawPillAt(ox, oy, d, d, ThemeRgbPacked(rgb));
+    DrawAaDisk(ox, oy, d, rgb);
+}
+
+static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb)
+{
+    float cx;
+    float cy;
+    float rad;
+    int px;
+    int py;
+    int sr;
+    int sg;
+    int sb;
+    int br;
+    int bg;
+    int bb;
+
+    if (d < 4) {
+        return;
+    }
+    cx = (float)x0 + (float)d * 0.5f;
+    cy = (float)y0 + (float)d * 0.5f;
+    rad = (float)d * 0.5f - 0.4f;
+    sr = (int)((rgb >> 16) & 0xFFu);
+    sg = (int)((rgb >> 8) & 0xFFu);
+    sb = (int)(rgb & 0xFFu);
+    br = (int)((g_theme.windowRgb >> 16) & 0xFFu);
+    bg = (int)((g_theme.windowRgb >> 8) & 0xFFu);
+    bb = (int)(g_theme.windowRgb & 0xFFu);
+    for (py = y0; py < y0 + d; py++) {
+        for (px = x0; px < x0 + d; px++) {
+            float dx = ((float)px + 0.5f) - cx;
+            float dy = ((float)py + 0.5f) - cy;
+            float dist = (float)sqrt(dx * dx + dy * dy);
+            float a = (rad + 1.15f) - dist;
+            int or_;
+            int og;
+            int ob;
+            if (a <= 0.0f) {
+                continue;
+            }
+            if (a > 1.0f) {
+                a = 1.0f;
+            }
+            or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
+            og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
+            ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
+            SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(
+                ((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob));
+        }
+    }
 }
 
 static void __fastcall ButtonPaint_Hook(void *thisPtr)

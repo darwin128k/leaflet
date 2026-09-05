@@ -12,6 +12,7 @@ typedef void(__thiscall *SurfDrawFilledRectFn)(void *surf, int x0, int y0, int x
 #define RVA_GETSIZE               0x00043780u
 #define RVA_GETSURFACE            0x0003f040u
 #define RVA_PANEL_PAINTBACKGROUND 0x00043d60u
+#define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
 #define RVA_FRAME_PAINTBACKGROUND 0x0004cb60u /* Frame/PropertyDialog/MessageBox/COptionsDialog */
 #define RVA_CAREER_PAINTBACKGROUND 0x00002070u
 #define RVA_PAINTBACKGROUND_18530 0x00018530u
@@ -28,12 +29,14 @@ static GetSizeFn g_GetSize = NULL;
 static GetSurfaceFn g_GetSurface = NULL;
 
 static PaintFn g_origPanelPaintBg = NULL;
+static PaintFn g_origButtonPaint = NULL;
 static PaintFn g_origFramePaintBg = NULL;
 static PaintFn g_origCareerPaintBg = NULL;
 static PaintFn g_origPaint18530 = NULL;
 static PaintFn g_origPaintBorder = NULL;
 static PaintFn g_origFramePaintBgAlt = NULL;
 static BYTE g_panelPaintBgTramp[32];
+static BYTE g_buttonPaintTramp[32];
 static BYTE g_framePaintBgTramp[32];
 static BYTE g_careerPaintBgTramp[32];
 static BYTE g_paint18530Tramp[32];
@@ -50,6 +53,7 @@ static int g_roundActive = 0;
 static int g_roundW = 0;
 static int g_roundH = 0;
 static int g_roundR = 0;
+static int g_roundIsButton = 0;
 static unsigned int g_curColor = 0xE0101410u;
 static OverlayTheme g_theme;
 
@@ -64,13 +68,17 @@ static int g_edgeRoundTop = 0;
 static int g_edgeRoundBottom = 0;
 static unsigned int g_edgeBodyColor = 0;
 
-static unsigned int ThemeStrokePacked(void)
+static unsigned int ThemeRgbPacked(uint32_t rgb)
 {
-    uint32_t rgb = g_theme.borderRgb;
     unsigned int r = (rgb >> 16) & 0xFFu;
     unsigned int g = (rgb >> 8) & 0xFFu;
     unsigned int b = rgb & 0xFFu;
     return (0xFFu << 24) | (b << 16) | (g << 8) | r;
+}
+
+static unsigned int ThemeStrokePacked(void)
+{
+    return ThemeRgbPacked(g_theme.borderRgb);
 }
 
 static int ThemeStrokeThickness(void)
@@ -113,11 +121,12 @@ static int ClampInt(int v, int lo, int hi)
     return v;
 }
 
-/* Bigger windows get a bigger radius; tiny query boxes stay tight. */
+/* Same radius as the LVGL prefetch card (overlay.cpp WIN radius 12). */
 static int RadiusForSize(int w, int h)
 {
-    int m = (w < h) ? w : h;
-    return ClampInt(m / 12, 8, 24);
+    (void)w;
+    (void)h;
+    return 12;
 }
 
 static int CornerInset(int y, int h, int r)
@@ -149,6 +158,62 @@ static const char *PanelName(void *panel)
     }
     name = *(const char **)((char *)panel + OFF_PANEL_NAME);
     return name != NULL ? name : "";
+}
+
+static int NameIsOptionsTab(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    if (lstrcmpiA(name, "Multiplayer") == 0 || lstrcmpiA(name, "Keyboard") == 0
+        || lstrcmpiA(name, "Mouse") == 0 || lstrcmpiA(name, "Audio") == 0
+        || lstrcmpiA(name, "Video") == 0 || lstrcmpiA(name, "Voice") == 0
+        || lstrcmpiA(name, "Lock") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static int NameIsMenuChrome(const char *name);
+
+static int NameIsDialogButton(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    if (lstrcmpiA(name, "OK") == 0 || lstrcmpiA(name, "Cancel") == 0
+        || lstrcmpiA(name, "Apply") == 0 || lstrcmpiA(name, "Advanced") == 0
+        || lstrcmpiA(name, "Close") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static int ShouldRoundButton(void *thisPtr)
+{
+    int w = 0, h = 0;
+    const char *name;
+    if (g_GetSize == NULL || thisPtr == NULL) {
+        return 0;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (h < 14 || h > 48 || w < 24 || w > 400) {
+        return 0;
+    }
+    name = PanelName(thisPtr);
+    if (NameIsMenuChrome(name) || NameIsOptionsTab(name)) {
+        return 0;
+    }
+    /* PropertyDialog names stay English (OK/Cancel/Apply) even when the
+     * caption is localized -- those labels can make the control wider
+     * than the old 130px cap. */
+    if (NameIsDialogButton(name)) {
+        return 1;
+    }
+    if (w >= 40 && w <= 280 && h >= 18 && h <= 32) {
+        return 1;
+    }
+    return 0;
 }
 
 static int NameContainsI(const char *hay, const char *needle)
@@ -338,12 +403,30 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
     }
     rw = x1 - x0;
     rh = y1 - y0;
-    /* Stock FrameBorder/RaisedBorder is 1px hairlines on the square AABB.
-     * Drop them while we are painting a rounded window. */
     if (rw <= 2 || rh <= 2) {
         return;
     }
     r = g_roundR;
+    /* Dialog buttons: OK / Cancel / Apply / Advanced — same rounded plate
+     * language as the prefetch card, not the square VGUI fill. */
+    if (g_roundIsButton && rh >= 14 && rh <= 40 && rw >= 24) {
+        if (r * 2 > rh) {
+            r = rh / 2;
+        }
+        if (r < 3) {
+            r = 3;
+        }
+        {
+            unsigned int fill = ThemeRgbPacked(g_theme.trackRgb);
+            g_edgeCaptured = 1;
+            g_edgeX = x0;
+            g_edgeY = y0;
+            g_edgeRoundTop = 1;
+            g_edgeRoundBottom = 1;
+            DrawRoundedFillAt(x0, y0, rw, rh, r, fill, 1, 1);
+        }
+        return;
+    }
     /* Main chrome: body of a dialog / sheet. */
     if (rw >= 80 && rh >= 48) {
         if (r * 2 + 4 > rw || r * 2 + 4 > rh) {
@@ -427,28 +510,28 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
     }
 
     __try {
-        if (ShouldRoundPanel(thisPtr)) {
+        if (ShouldRoundButton(thisPtr) || ShouldRoundPanel(thisPtr)) {
             int w = 0, h = 0;
+            int isBtn;
             g_GetSize(thisPtr, &w, &h);
             EnsureSurfaceHooks();
-            /* Kill the scheme IBorder (FrameBorder/RaisedBorder) so the
-             * square AABB stroke cannot sit outside the rounded fill --
-             * we draw our own rounded stroke below instead of just
-             * dropping it. */
             *(void **)((char *)thisPtr + OFF_PANEL_BORDER) = NULL;
+            isBtn = ShouldRoundButton(thisPtr);
             g_roundW = w;
             g_roundH = h;
-            g_roundR = RadiusForSize(w, h);
+            g_roundIsButton = isBtn;
+            g_roundR = isBtn ? 8 : RadiusForSize(w, h);
             g_roundActive = 1;
             g_edgeCaptured = 0;
             orig(thisPtr);
             g_roundActive = 0;
+            g_roundIsButton = 0;
 
-            /* Trace a thin rounded stroke around the body we just painted,
-             * while children still haven't drawn -- outer ring in a
-             * lightened tint of the body color, then the same body color
-             * inset by the stroke thickness to leave just the ring. */
-            if (g_edgeCaptured) {
+            if (isBtn) {
+                int px = g_edgeCaptured ? g_edgeX : 0;
+                int py = g_edgeCaptured ? g_edgeY : 0;
+                DrawRoundedFillAt(px, py, w, h, 8, ThemeRgbPacked(g_theme.trackRgb), 1, 1);
+            } else if (g_edgeCaptured) {
                 int thickness = ThemeStrokeThickness();
                 unsigned int strokeColor = ThemeStrokePacked();
                 int innerW = w - thickness * 2;
@@ -521,6 +604,10 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
      * that actually fill a dialog; never the 64px logo strip. */
     if (g_GetSize != NULL && thisPtr != NULL) {
         g_GetSize(thisPtr, &w, &h);
+        if (ShouldRoundButton(thisPtr)) {
+            RunRoundedBackground(thisPtr, g_origPanelPaintBg);
+            return;
+        }
         if (h < 100) {
             if (g_origPanelPaintBg != NULL) {
                 g_origPanelPaintBg(thisPtr);
@@ -529,6 +616,27 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
         }
     }
     RunRoundedBackground(thisPtr, g_origPanelPaintBg);
+}
+
+static void __fastcall ButtonPaint_Hook(void *thisPtr)
+{
+    /* Paint Traverse draws PaintBackground then Paint. Dialog buttons
+     * often skip a visible fill (transparent scheme bg) so the plate
+     * has to be painted here, immediately under the label. */
+    if (ShouldRoundButton(thisPtr) && g_GetSize != NULL) {
+        int w = 0, h = 0;
+        int r;
+        g_GetSize(thisPtr, &w, &h);
+        EnsureSurfaceHooks();
+        r = (h < 20) ? 4 : 8;
+        if (r * 2 > h) {
+            r = h / 2;
+        }
+        DrawRoundedFillAt(0, 0, w, h, r, ThemeRgbPacked(g_theme.trackRgb), 1, 1);
+    }
+    if (g_origButtonPaint != NULL) {
+        g_origButtonPaint(thisPtr);
+    }
 }
 
 static void __fastcall FramePaintBg_Hook(void *thisPtr)
@@ -561,7 +669,7 @@ static void __fastcall PaintBorder_Hook(void *thisPtr)
     }
 
     __try {
-        if (ShouldRoundPanel(thisPtr) ||
+        if (ShouldRoundPanel(thisPtr) || ShouldRoundButton(thisPtr) ||
             *(void **)((char *)thisPtr + OFF_PANEL_BORDER) == NULL) {
             return;
         }
@@ -600,6 +708,12 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     InstallNearHook(base + RVA_PANEL_PAINTBACKGROUND, 8, kPanelBgPrologue,
                     g_panelPaintBgTramp, sizeof(g_panelPaintBgTramp),
                     (void *)PanelPaintBg_Hook, &g_origPanelPaintBg, "PanelPaintBackground");
+    {
+        static const BYTE kButtonPaintPrologue[6] = { 0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1 };
+        InstallNearHook(base + RVA_BUTTON_PAINT, 6, kButtonPaintPrologue,
+                        g_buttonPaintTramp, sizeof(g_buttonPaintTramp),
+                        (void *)ButtonPaint_Hook, &g_origButtonPaint, "ButtonPaint");
+    }
     InstallNearHook(base + RVA_CAREER_PAINTBACKGROUND, 5, kCareerBgPrologue,
                     g_careerPaintBgTramp, sizeof(g_careerPaintBgTramp),
                     (void *)CareerPaintBg_Hook, &g_origCareerPaintBg, "CareerPaintBackground");

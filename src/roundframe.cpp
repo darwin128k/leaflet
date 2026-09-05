@@ -3,6 +3,7 @@
 #include "log.h"
 #include <string.h>
 
+typedef void(__thiscall *GetPosFn)(void *self, int *outX, int *outY);
 typedef void(__thiscall *GetSizeFn)(void *self, int *outWide, int *outTall);
 typedef void(__thiscall *PaintFn)(void *self);
 typedef void *(__cdecl *GetSurfaceFn)(void);
@@ -12,6 +13,7 @@ typedef char(__thiscall *ByteGetterFn)(void *self);
 typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
 
+#define RVA_GETPOS                0x00043720u
 #define RVA_GETSIZE               0x00043780u
 #define RVA_GETSURFACE            0x0003f040u
 #define RVA_PANEL_PAINTBACKGROUND 0x00043d60u
@@ -47,6 +49,7 @@ typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsi
 #define SURF_VT_DRAWFILLEDRECT     0x24
 
 static BYTE *g_gameUiBase = NULL;
+static GetPosFn g_GetPos = NULL;
 static GetSizeFn g_GetSize = NULL;
 static GetSurfaceFn g_GetSurface = NULL;
 
@@ -343,8 +346,20 @@ static int ShouldRoundButton(void *thisPtr)
         return 0;
     }
     g_GetSize(thisPtr, &w, &h);
-    if (h < 14 || h > 48 || w < 24 || w > 400) {
+    /* Title-bar close / icon are ~20px. A plate here paints over the
+     * first letters of the Frame title (Options → tions, Quit → uit).
+     * After disconnect ClientScheme can size those chrome buttons a bit
+     * wider, so skip anything sitting in the caption strip. */
+    if (h < 14 || h > 48 || w < 40 || w > 400) {
         return 0;
+    }
+    if (g_GetPos != NULL) {
+        int x = 0;
+        int y = 0;
+        g_GetPos(thisPtr, &x, &y);
+        if (y < 36 && h <= 32) {
+            return 0;
+        }
     }
     name = PanelName(thisPtr);
     if (NameIsMenuChrome(name) || NameIsOptionsTab(name)) {
@@ -517,6 +532,53 @@ static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int 
         int inset = CornerInset(botR + y, botR * 2, botR);
         int py = y0 + h - botR + y;
         SurfaceFill(x0 + inset, py, x0 + w - inset, py + 1, packedRgba);
+    }
+}
+
+static void DrawRoundedStrokeAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
+                                int thickness, int roundTop, int roundBottom)
+{
+    int y;
+    int topR;
+    int botR;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    if (thickness < 1) {
+        thickness = 1;
+    }
+    topR = roundTop ? r : 0;
+    botR = roundBottom ? r : 0;
+    if (topR * 2 + 4 > w) {
+        topR = ClampInt(w / 4, 0, topR);
+    }
+    if (botR * 2 + 4 > w) {
+        botR = ClampInt(w / 4, 0, botR);
+    }
+    for (y = 0; y < h; y++) {
+        int inset = 0;
+        int xL;
+        int xR;
+        if (y < topR) {
+            inset = CornerInset(y, topR * 2, topR);
+        } else if (y >= h - botR) {
+            inset = CornerInset(botR + (y - (h - botR)), botR * 2, botR);
+        }
+        xL = x0 + inset;
+        xR = x0 + w - inset;
+        if (xR <= xL) {
+            continue;
+        }
+        if (y < thickness || y >= h - thickness) {
+            SurfaceFill(xL, y0 + y, xR, y0 + y + 1, packedRgba);
+        } else {
+            int tw = thickness;
+            if (xL + tw > xR) {
+                tw = xR - xL;
+            }
+            SurfaceFill(xL, y0 + y, xL + tw, y0 + y + 1, packedRgba);
+            SurfaceFill(xR - tw, y0 + y, xR, y0 + y + 1, packedRgba);
+        }
     }
 }
 
@@ -738,20 +800,13 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
                                                           : ThemeRgbPacked(g_theme.trackRgb);
                 DrawRoundedFillAt(px, py, w, h, 8, fill, 1, 1);
             } else if (g_edgeCaptured) {
-                int thickness = ThemeStrokeThickness();
-                unsigned int strokeColor = ThemeStrokePacked();
-                int innerW = w - thickness * 2;
-                int innerH = h - thickness * 2;
-                int innerR = g_roundR - thickness;
-                if (innerR < 0) {
-                    innerR = 0;
-                }
-                DrawRoundedFillAt(g_edgeX, g_edgeY, w, h, g_roundR, strokeColor,
-                                   g_edgeRoundTop, g_edgeRoundBottom);
-                if (innerW > 0 && innerH > 0) {
-                    DrawRoundedFillAt(g_edgeX + thickness, g_edgeY + thickness, innerW, innerH,
-                                       innerR, g_edgeBodyColor, g_edgeRoundTop, g_edgeRoundBottom);
-                }
+                /* Orig already drew the rounded body and then the Frame
+                 * title. Refilling the interior here ate "Op" / "Q" after
+                 * disconnect, when ClientScheme made the body fill match
+                 * the panel and g_edgeCaptured flipped on. Stroke only. */
+                DrawRoundedStrokeAt(g_edgeX, g_edgeY, w, h, g_roundR,
+                                    ThemeStrokePacked(), ThemeStrokeThickness(),
+                                    g_edgeRoundTop, g_edgeRoundBottom);
             }
             return;
         }
@@ -1005,6 +1060,7 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     g_surfaceHooked = 0;
     g_roundActive = 0;
     g_gameUiBase = base;
+    g_GetPos = (GetPosFn)(base + RVA_GETPOS);
     g_GetSize = (GetSizeFn)(base + RVA_GETSIZE);
     g_GetSurface = (GetSurfaceFn)(base + RVA_GETSURFACE);
 

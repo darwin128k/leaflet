@@ -18,7 +18,8 @@ void Overlay_Start(void)
 #include <string.h>
 #include <wchar.h>
 
-#define BAR_H 36
+#define BAR_H 40
+#define HOLD_MS 450
 #define CLASS_NAME L"LeafletLvglOverlay"
 
 static volatile LONG g_started = 0;
@@ -33,6 +34,9 @@ static lv_display_t *g_disp = NULL;
 static void *g_lvBuf = NULL;
 static lv_obj_t *g_label = NULL;
 static lv_obj_t *g_bar = NULL;
+static char g_shownLabel[260];
+static int g_holdLeft = 0;
+static int g_bannerOn = 0;
 
 static uint32_t TickMs(void)
 {
@@ -133,19 +137,21 @@ static int CreateSurface(int width)
     return 1;
 }
 
-static void BlitLayered(void)
+static void BlitLayered(int show)
 {
     POINT dst;
     SIZE size;
     POINT src;
     BLENDFUNCTION blend;
-    RECT client;
     POINT topLeft;
 
     if (g_hwnd == NULL || g_bits == NULL || g_game == NULL || !IsWindow(g_game)) {
         return;
     }
-    GetClientRect(g_game, &client);
+    if (!show) {
+        ShowWindow(g_hwnd, SW_HIDE);
+        return;
+    }
     topLeft.x = 0;
     topLeft.y = 0;
     ClientToScreen(g_game, &topLeft);
@@ -162,7 +168,6 @@ static void BlitLayered(void)
     blend.SourceConstantAlpha = 255;
     blend.AlphaFormat = AC_SRC_ALPHA;
     UpdateLayeredWindow(g_hwnd, NULL, &dst, &size, g_memDc, &src, 0, &blend, ULW_ALPHA);
-    (void)client;
 }
 
 static void FlushCb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
@@ -174,7 +179,14 @@ static void FlushCb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 
     if (dst != NULL) {
         for (y = area->y1; y <= area->y2; y++) {
-            memcpy(dst + (size_t)y * (size_t)g_w + (size_t)area->x1, src, (size_t)w * 4u);
+            uint32_t *row = dst + (size_t)y * (size_t)g_w + (size_t)area->x1;
+            int32_t x;
+            for (x = 0; x < w; x++) {
+                /* Layered HWND uses per-pixel alpha. LVGL 32-bit often leaves
+                 * A=0, which made the matte + filename invisible and left
+                 * only the blue indicator as a hairline. */
+                row[x] = src[x] | 0xFF000000u;
+            }
             src += w;
         }
     }
@@ -216,6 +228,7 @@ static void BuildUi(void)
 
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x141414), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_set_style_radius(scr, 0, 0);
@@ -223,8 +236,9 @@ static void BuildUi(void)
     g_label = lv_label_create(scr);
     lv_label_set_long_mode(g_label, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(g_label, g_w - 16);
-    lv_obj_align(g_label, LV_ALIGN_TOP_LEFT, 8, 6);
+    lv_obj_align(g_label, LV_ALIGN_TOP_LEFT, 8, 8);
     lv_obj_set_style_text_color(g_label, lv_color_hex(0xe8e8e8), 0);
+    lv_obj_set_style_text_opa(g_label, LV_OPA_COVER, 0);
     lv_label_set_text(g_label, "");
 
     g_bar = lv_bar_create(scr);
@@ -263,22 +277,37 @@ static int InitLvgl(int width)
     return 1;
 }
 
-static void SyncUi(void)
+static int SyncUi(void)
 {
     int active = 0;
     int permille = 0;
     char label[260];
+    const char *shown;
 
     Prefetch_GetUi(&active, &permille, label, sizeof(label));
+    if (label[0] != '\0') {
+        lstrcpynA(g_shownLabel, label, sizeof(g_shownLabel));
+    }
+    if (active) {
+        g_holdLeft = HOLD_MS;
+        g_bannerOn = 1;
+    } else if (g_holdLeft > 0 && g_shownLabel[0] != '\0') {
+        g_holdLeft -= 16;
+        g_bannerOn = 1;
+    } else {
+        g_holdLeft = 0;
+        g_bannerOn = 0;
+        g_shownLabel[0] = '\0';
+    }
+
+    shown = g_shownLabel;
     if (g_label != NULL) {
-        lv_label_set_text(g_label, label);
+        lv_label_set_text(g_label, shown);
     }
     if (g_bar != NULL) {
         lv_bar_set_value(g_bar, permille, LV_ANIM_OFF);
     }
-    if (g_hwnd != NULL) {
-        ShowWindow(g_hwnd, active ? SW_SHOWNOACTIVATE : SW_HIDE);
-    }
+    return g_bannerOn;
 }
 
 static DWORD WINAPI OverlayThread(LPVOID unused)
@@ -318,18 +347,22 @@ static DWORD WINAPI OverlayThread(LPVOID unused)
     }
     HookLog("Overlay: LVGL banner %dx%d", width, BAR_H);
     idleMs = 0;
+    g_shownLabel[0] = '\0';
+    g_holdLeft = 0;
+    g_bannerOn = 0;
 
     for (;;) {
+        int show;
         while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        SyncUi();
+        show = SyncUi();
         lv_timer_handler();
-        BlitLayered();
-        if (Prefetch_IsActive() == 0) {
+        BlitLayered(show);
+        if (!show && Prefetch_IsActive() == 0) {
             idleMs += 16;
-            if (idleMs > 600) {
+            if (idleMs > 50) {
                 break;
             }
         } else {

@@ -17,6 +17,8 @@ typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsi
 #define RVA_PANEL_PAINTBACKGROUND 0x00043d60u
 #define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
 #define RVA_BUTTON_VTABLE         0x0009caccu /* vgui2::Button vtable; Label/CheckButton/PageTab differ */
+#define RVA_LABEL_VTABLE          0x0009cdf4u
+#define RVA_URLLABEL_VTABLE       0x000a023cu
 #define RVA_PAGETAB_VTABLE        0x000a482cu
 #define OFF_BUTTON_ISARMED_VT     0x2a4
 #define OFF_BUTTON_ISDEPRESSED_VT 0x2a8
@@ -205,6 +207,17 @@ static int IsVguiButton(void *thisPtr)
     }
     vt = *(void **)thisPtr;
     return vt == (void *)(g_gameUiBase + RVA_BUTTON_VTABLE);
+}
+
+static int IsStaticTextPanel(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_LABEL_VTABLE)
+        || vt == (void *)(g_gameUiBase + RVA_URLLABEL_VTABLE);
 }
 
 static int IsPageTab(void *thisPtr)
@@ -713,6 +726,12 @@ static void InstallNearHook(BYTE *target, unsigned stolen, const BYTE *expected,
 static void __fastcall PanelPaintBg_Hook(void *thisPtr)
 {
     int w = 0, h = 0;
+    /* Labels keep scheme LabelBgColor (ControlBG, alpha 242) which reads
+     * as a second grey box on the inner sheet. Skip the fill so static
+     * text sits on the parent. */
+    if (IsStaticTextPanel(thisPtr)) {
+        return;
+    }
     /* 0x43d60 is shared by lots of controls. Only round inner sheets
      * that actually fill a dialog; never the 64px logo strip. */
     if (g_GetSize != NULL && thisPtr != NULL) {

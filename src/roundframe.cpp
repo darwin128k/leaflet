@@ -37,6 +37,9 @@ typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsi
 #define RVA_PAINTBACKGROUND_18530 0x00018530u
 #define RVA_PAINTBORDER           0x00043d40u
 #define RVA_FRAME_PAINTBG_ALT     0x00023970u
+#define RVA_PROGRESSBAR_PAINTBG   0x000696b0u /* vgui2::ProgressBar::PaintBackground — cube segments */
+#define RVA_PROGRESSBAR_VTABLE    0x000a1dccu
+#define OFF_PROGRESS              0x78 /* float 0..1; confirmed via fmul [esi+0x78] in PaintBackground */
 
 #define OFF_PANEL_NAME   0x44
 #define OFF_PANEL_BORDER 0x2C /* IBorder* loaded by Panel::PaintBorder */
@@ -54,6 +57,7 @@ static PaintFn g_origCareerPaintBg = NULL;
 static PaintFn g_origPaint18530 = NULL;
 static PaintFn g_origPaintBorder = NULL;
 static PaintFn g_origFramePaintBgAlt = NULL;
+static PaintFn g_origProgressPaintBg = NULL;
 static BYTE g_panelPaintBgTramp[32];
 static BYTE g_buttonPaintTramp[32];
 static BYTE g_framePaintBgTramp[32];
@@ -61,6 +65,7 @@ static BYTE g_careerPaintBgTramp[32];
 static BYTE g_paint18530Tramp[32];
 static BYTE g_paintBorderTramp[32];
 static BYTE g_framePaintBgAltTramp[32];
+static BYTE g_progressPaintBgTramp[32];
 
 static SurfDrawSetColorFn g_origDrawSetColor = NULL;
 static SurfDrawFilledRectFn g_origDrawFilledRect = NULL;
@@ -229,6 +234,16 @@ static int IsPageTab(void *thisPtr)
     }
     vt = *(void **)thisPtr;
     return vt == (void *)(g_gameUiBase + RVA_PAGETAB_VTABLE);
+}
+
+static int IsProgressBar(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_PROGRESSBAR_VTABLE);
 }
 
 static int VtableFlag(void *thisPtr, unsigned vtOff)
@@ -822,8 +837,68 @@ static void __fastcall FramePaintBgAlt_Hook(void *thisPtr)
     RunRoundedBackground(thisPtr, g_origFramePaintBgAlt);
 }
 
+static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
+{
+    int w = 0, h = 0;
+    int barH;
+    int y;
+    int r;
+    int fillW;
+    float p;
+
+    if (g_GetSize == NULL || thisPtr == NULL) {
+        if (g_origProgressPaintBg != NULL) {
+            g_origProgressPaintBg(thisPtr);
+        }
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 16 || h < 4) {
+        if (g_origProgressPaintBg != NULL) {
+            g_origProgressPaintBg(thisPtr);
+        }
+        return;
+    }
+
+    EnsureSurfaceHooks();
+    p = *(float *)((char *)thisPtr + OFF_PROGRESS);
+    if (p < 0.0f) {
+        p = 0.0f;
+    }
+    if (p > 1.0f) {
+        p = 1.0f;
+    }
+    /* Same 6px pill as overlay.cpp prefetch lv_bar (BTN_H). */
+    barH = 6;
+    if (barH > h - 2) {
+        barH = h - 2;
+    }
+    if (barH < 3) {
+        barH = h;
+    }
+    y = (h - barH) / 2;
+    r = 3;
+    if (r * 2 > barH) {
+        r = barH / 2;
+    }
+    DrawRoundedFillAt(0, y, w, barH, r, ThemeRgbPacked(g_theme.trackRgb), 1, 1);
+    fillW = (int)(p * (float)w + 0.5f);
+    if (fillW > 0) {
+        if (fillW < 4) {
+            fillW = 4;
+        }
+        if (fillW > w) {
+            fillW = w;
+        }
+        DrawRoundedFillAt(0, y, fillW, barH, r, ThemeRgbPacked(g_theme.accentRgb), 1, 1);
+    }
+}
+
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
+    if (IsProgressBar(thisPtr)) {
+        return;
+    }
     if (InterlockedCompareExchange(&g_roundDisabled, 0, 0) != 0) {
         if (g_origPaintBorder != NULL) {
             g_origPaintBorder(thisPtr);
@@ -889,6 +964,12 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     InstallNearHook(base + RVA_PAINTBORDER, 7, kBorderPrologue,
                     g_paintBorderTramp, sizeof(g_paintBorderTramp),
                     (void *)PaintBorder_Hook, &g_origPaintBorder, "PaintBorder");
+    {
+        static const BYTE kProgressBgPrologue[6] = { 0x83, 0xEC, 0x0C, 0x53, 0x55, 0x56 };
+        InstallNearHook(base + RVA_PROGRESSBAR_PAINTBG, 6, kProgressBgPrologue,
+                        g_progressPaintBgTramp, sizeof(g_progressPaintBgTramp),
+                        (void *)ProgressPaintBg_Hook, &g_origProgressPaintBg, "ProgressBarPaintBackground");
+    }
 
     /* Default/OK buttons and tabs draw a dotted inset rect on focus.
      * Scheme ButtonKeyFocusBorder is already empty; this is a code path. */

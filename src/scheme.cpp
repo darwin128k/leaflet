@@ -215,10 +215,9 @@ void OverlayTheme_Load(OverlayTheme *out)
     if (root == NULL || root[0] == '\0') {
         return;
     }
+    /* GameUI / overlay: TrackerScheme. ClientScheme is the in-game VGUI
+     * (MOTD, team menu) and stays the stock CS gold palette. */
     _snprintf(path, sizeof(path), "%s\\platform\\resource\\TrackerScheme.res", root);
-    path[sizeof(path) - 1] = '\0';
-    ApplyFile(path, out);
-    _snprintf(path, sizeof(path), "%s\\cstrike\\resource\\ClientScheme.res", root);
     path[sizeof(path) - 1] = '\0';
     ApplyFile(path, out);
 }

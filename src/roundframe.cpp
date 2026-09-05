@@ -420,6 +420,12 @@ static int ShouldRoundPanel(void *thisPtr)
     if (NameIsMenuChrome(name) || IsBannerPanel(w, h)) {
         return 0;
     }
+    if (NameContainsI(name, "MOTD") || NameContainsI(name, "TeamMenu")
+        || NameContainsI(name, "ClassMenu") || NameContainsI(name, "MapInfo")
+        || lstrcmpiA(name, "Message") == 0
+        || lstrcmpiA(name, "ViewPortBackGround") == 0) {
+        return 0;
+    }
     GameClientSize(&gameW, &gameH);
     if (gameW > 0 && gameH > 0 && w >= gameW - 8 && h >= gameH - 8) {
         return 0;
@@ -746,8 +752,14 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
             }
             return;
         }
+        if (ShouldRoundPanel(thisPtr)) {
+            RunRoundedBackground(thisPtr, g_origPanelPaintBg);
+            return;
+        }
     }
-    RunRoundedBackground(thisPtr, g_origPanelPaintBg);
+    if (g_origPanelPaintBg != NULL) {
+        g_origPanelPaintBg(thisPtr);
+    }
 }
 
 static void __fastcall ButtonPaint_Hook(void *thisPtr)

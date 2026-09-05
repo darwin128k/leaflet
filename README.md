@@ -22,14 +22,15 @@ Does not patch `steam_api.dll`.
 
 CMake `-DLEAFLET_LVGL=OFF` skips FetchContent for LVGL and compiles an
 empty overlay stub. Default is ON: a click-through layered HWND
-(`WS_EX_LAYERED | TRANSPARENT | NOACTIVATE`) draws a matte top strip
-with LVGL 9 while prefetch runs. GameUI stays native. The overlay does
-not hook `SwapBuffers` or take focus.
+(`WS_EX_LAYERED | TRANSPARENT | NOACTIVATE`) dims the game client and
+draws a macOS-dark sheet (window + inner progress plate) with LVGL 9 while prefetch runs. Clicks pass
+through to GameUI. The overlay does not hook `SwapBuffers` or take focus.
 
 ## Prefetch
 
-Optional FastDL pull while the main menu is up. Progress is the LVGL
-top strip (filename + blue bar `#3d8bfd`), not GameUI `LoadingDialog`.
+Optional FastDL pull while the main menu is up. Progress is a centered
+matte window (`#1C1C1E`) with a lighter inner plate (`#3A3A3C`) filling
+`#0A84FF`, over a dimmed screen — not GameUI `LoadingDialog`.
 
 ```
 [Prefetch]

@@ -9,6 +9,7 @@ void Overlay_Start(void)
 #else
 
 #include "prefetch.h"
+#include "scheme.h"
 #include "log.h"
 
 #include <lvgl.h>
@@ -18,9 +19,28 @@ void Overlay_Start(void)
 #include <string.h>
 #include <wchar.h>
 
-#define BAR_H 40
 #define HOLD_MS 450
 #define CLASS_NAME L"LeafletLvglOverlay"
+
+/* macOS dark (Big Sur+):
+ *  window / HUD fill  #2C2C2E
+ *  elevated control   #3A3A3C
+ *  label              #F5F5F7
+ *  secondary          #98989D
+ *  separator          #48484A
+ *  accent             #0A84FF  (progress fill; close to our #3d8bfd) */
+#define COL_DIM        0x000000
+#define COL_WINDOW     0x1C1C1E
+#define COL_PILL       0x3A3A3C
+#define COL_ACCENT     0x0A84FF
+#define COL_TEXT       0xF5F5F7
+#define COL_MUTED      0x98989D
+#define COL_STROKE     0x3A3A3C
+#define DIM_OPA        110
+#define WIN_W_MAX      420
+#define WIN_PAD        16
+#define WIN_GAP        8
+#define BTN_H          6
 
 static volatile LONG g_started = 0;
 
@@ -30,8 +50,10 @@ static HDC g_memDc = NULL;
 static HBITMAP g_dib = NULL;
 static void *g_bits = NULL;
 static int g_w = 0;
+static int g_h = 0;
 static lv_display_t *g_disp = NULL;
 static void *g_lvBuf = NULL;
+static lv_obj_t *g_caption = NULL;
 static lv_obj_t *g_label = NULL;
 static lv_obj_t *g_bar = NULL;
 static char g_shownLabel[260];
@@ -108,7 +130,7 @@ static void DestroySurface(void)
     g_bits = NULL;
 }
 
-static int CreateSurface(int width)
+static int CreateSurface(int width, int height)
 {
     BITMAPINFO bmi;
     HDC screen;
@@ -117,7 +139,7 @@ static int CreateSurface(int width)
     memset(&bmi, 0, sizeof(bmi));
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -BAR_H;
+    bmi.bmiHeader.biHeight = -height;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -133,7 +155,9 @@ static int CreateSurface(int width)
         return 0;
     }
     SelectObject(g_memDc, g_dib);
+    memset(g_bits, 0, (size_t)width * (size_t)height * 4u);
     g_w = width;
+    g_h = height;
     return 1;
 }
 
@@ -157,10 +181,10 @@ static void BlitLayered(int show)
     ClientToScreen(g_game, &topLeft);
     dst.x = topLeft.x;
     dst.y = topLeft.y;
-    SetWindowPos(g_hwnd, HWND_TOPMOST, dst.x, dst.y, g_w, BAR_H,
+    SetWindowPos(g_hwnd, HWND_TOPMOST, dst.x, dst.y, g_w, g_h,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     size.cx = g_w;
-    size.cy = BAR_H;
+    size.cy = g_h;
     src.x = 0;
     src.y = 0;
     blend.BlendOp = AC_SRC_OVER;
@@ -182,10 +206,19 @@ static void FlushCb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
             uint32_t *row = dst + (size_t)y * (size_t)g_w + (size_t)area->x1;
             int32_t x;
             for (x = 0; x < w; x++) {
-                /* Layered HWND uses per-pixel alpha. LVGL 32-bit often leaves
-                 * A=0, which made the matte + filename invisible and left
-                 * only the blue indicator as a hairline. */
-                row[x] = src[x] | 0xFF000000u;
+                uint32_t px = src[x];
+                uint32_t a = (px >> 24) & 0xFFu;
+                uint32_t r = (px >> 16) & 0xFFu;
+                uint32_t g = (px >> 8) & 0xFFu;
+                uint32_t b = px & 0xFFu;
+                if (a == 0) {
+                    row[x] = 0;
+                } else {
+                    row[x] = (a << 24)
+                        | (((r * a) / 255u) << 16)
+                        | (((g * a) / 255u) << 8)
+                        | ((b * a) / 255u);
+                }
             }
             src += w;
         }
@@ -201,7 +234,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-static int CreateOverlayWindow(HINSTANCE inst, int width)
+static int CreateOverlayWindow(HINSTANCE inst, int width, int height)
 {
     WNDCLASSEXW wc;
 
@@ -217,56 +250,113 @@ static int CreateOverlayWindow(HINSTANCE inst, int width)
         CLASS_NAME,
         L"",
         WS_POPUP,
-        0, 0, width, BAR_H,
+        0, 0, width, height,
         NULL, NULL, inst, NULL);
     return g_hwnd != NULL;
+}
+
+static int WinWidth(void)
+{
+    int w = g_w - 96;
+    if (w > WIN_W_MAX) {
+        w = WIN_W_MAX;
+    }
+    if (w < 300) {
+        w = 300;
+    }
+    return w;
+}
+
+static void StyleMatte(lv_obj_t *obj, uint32_t color, int radius)
+{
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(obj, radius, 0);
+    lv_obj_set_style_border_width(obj, 1, 0);
+    lv_obj_set_style_border_color(obj, lv_color_hex(COL_STROKE), 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
 
 static void BuildUi(void)
 {
     lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *win;
+    int winW = WinWidth();
+    OverlayTheme theme;
 
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x141414), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_set_style_opa(scr, LV_OPA_COVER, 0);
+    OverlayTheme_Load(&theme);
+
+    lv_obj_remove_style_all(scr);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(COL_DIM), 0);
+    lv_obj_set_style_bg_opa(scr, DIM_OPA, 0);
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_set_style_radius(scr, 0, 0);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    g_label = lv_label_create(scr);
-    lv_label_set_long_mode(g_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(g_label, g_w - 16);
-    lv_obj_align(g_label, LV_ALIGN_TOP_LEFT, 8, 8);
-    lv_obj_set_style_text_color(g_label, lv_color_hex(0xe8e8e8), 0);
+    win = lv_obj_create(scr);
+    StyleMatte(win, theme.windowRgb, 12);
+    lv_obj_set_style_border_color(win, lv_color_hex(theme.borderRgb), 0);
+    lv_obj_set_style_border_width(win, theme.borderWidth, 0);
+    lv_obj_set_width(win, winW);
+    lv_obj_set_height(win, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(win, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(win, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(win, WIN_PAD, 0);
+    lv_obj_set_style_pad_row(win, WIN_GAP, 0);
+
+    g_caption = lv_label_create(win);
+    lv_label_set_text(g_caption, "Downloading");
+    lv_obj_set_style_text_color(g_caption, lv_color_hex(theme.textRgb), 0);
+    lv_obj_set_style_text_opa(g_caption, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_align(g_caption, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(g_caption, lv_pct(100));
+
+    g_label = lv_label_create(win);
+    lv_label_set_long_mode(g_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(g_label, lv_pct(100));
+    lv_obj_set_style_text_color(g_label, lv_color_hex(theme.mutedRgb), 0);
     lv_obj_set_style_text_opa(g_label, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_align(g_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(g_label, "");
 
-    g_bar = lv_bar_create(scr);
-    lv_obj_set_size(g_bar, g_w, 4);
-    lv_obj_align(g_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    g_bar = lv_bar_create(win);
+    lv_obj_set_width(g_bar, lv_pct(100));
+    lv_obj_set_height(g_bar, BTN_H);
     lv_bar_set_range(g_bar, 0, 1000);
-    lv_obj_set_style_bg_color(g_bar, lv_color_hex(0x2a2a2a), LV_PART_MAIN);
+    lv_obj_remove_flag(g_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(g_bar, lv_color_hex(theme.trackRgb), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_bar, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_bar, lv_color_hex(0x3d8bfd), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(g_bar, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(g_bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_bar, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_bar, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_bar, lv_color_hex(theme.accentRgb), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(g_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(g_bar, 3, LV_PART_INDICATOR);
+
+    lv_obj_update_layout(win);
+    lv_obj_center(win);
 }
 
-static int InitLvgl(int width)
+static int InitLvgl(int width, int height)
 {
     size_t bufBytes;
 
     lv_init();
     lv_tick_set_cb(TickMs);
-    if (!CreateSurface(width)) {
+    if (!CreateSurface(width, height)) {
         return 0;
     }
-    bufBytes = (size_t)width * (size_t)BAR_H * 4u;
+    bufBytes = (size_t)width * 64u * 4u;
     g_lvBuf = malloc(bufBytes);
     if (g_lvBuf == NULL) {
         return 0;
     }
-    g_disp = lv_display_create(width, BAR_H);
+    g_disp = lv_display_create(width, height);
     if (g_disp == NULL) {
         return 0;
     }
@@ -317,6 +407,7 @@ static DWORD WINAPI OverlayThread(LPVOID unused)
     MSG msg;
     int idleMs = 0;
     int width;
+    int height;
     DWORD last = GetTickCount();
 
     (void)unused;
@@ -337,15 +428,19 @@ static DWORD WINAPI OverlayThread(LPVOID unused)
 
     GetClientRect(g_game, &client);
     width = client.right - client.left;
+    height = client.bottom - client.top;
     if (width < 320) {
         width = 320;
     }
-    if (!CreateOverlayWindow(inst, width) || !InitLvgl(width)) {
+    if (height < 240) {
+        height = 240;
+    }
+    if (!CreateOverlayWindow(inst, width, height) || !InitLvgl(width, height)) {
         HookLog("Overlay: LVGL init failed");
         InterlockedExchange(&g_started, 0);
         return 0;
     }
-    HookLog("Overlay: LVGL banner %dx%d", width, BAR_H);
+    HookLog("Overlay: LVGL sheet %dx%d", width, height);
     idleMs = 0;
     g_shownLabel[0] = '\0';
     g_holdLeft = 0;

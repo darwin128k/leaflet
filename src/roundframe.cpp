@@ -3,6 +3,8 @@
 #include "log.h"
 #include <string.h>
 
+typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
+typedef void(__thiscall *SetSizeFn)(void *self, int wide, int tall);
 typedef void(__thiscall *GetPosFn)(void *self, int *outX, int *outY);
 typedef void(__thiscall *GetSizeFn)(void *self, int *outWide, int *outTall);
 typedef void(__thiscall *PaintFn)(void *self);
@@ -13,13 +15,16 @@ typedef char(__thiscall *ByteGetterFn)(void *self);
 typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
 
+#define RVA_SETPOS                0x000436f0u
 #define RVA_GETPOS                0x00043720u
+#define RVA_SETSIZE               0x00043750u
 #define RVA_GETSIZE               0x00043780u
 #define RVA_GETSURFACE            0x0003f040u
 #define RVA_PANEL_PAINTBACKGROUND 0x00043d60u
 #define RVA_BUTTON_DRAWFOCUS      0x000407e0u /* Button::DrawFocusBox — dashed keyboard-focus rect */
 #define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
 #define RVA_BUTTON_VTABLE         0x0009caccu /* vgui2::Button vtable; Label/CheckButton/PageTab differ */
+#define RVA_FRAMEBUTTON_VTABLE    0x0009dd24u /* vgui2::FrameButton — caption close/min/max, not Button vt */
 #define RVA_LABEL_VTABLE          0x0009cdf4u
 #define RVA_URLLABEL_VTABLE       0x000a023cu
 #define RVA_PAGETAB_VTABLE        0x000a482cu
@@ -49,7 +54,9 @@ typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsi
 #define SURF_VT_DRAWFILLEDRECT     0x24
 
 static BYTE *g_gameUiBase = NULL;
+static SetPosFn g_SetPos = NULL;
 static GetPosFn g_GetPos = NULL;
+static SetSizeFn g_SetSize = NULL;
 static GetSizeFn g_GetSize = NULL;
 static GetSurfaceFn g_GetSurface = NULL;
 
@@ -215,7 +222,8 @@ static int IsVguiButton(void *thisPtr)
         return 0;
     }
     vt = *(void **)thisPtr;
-    return vt == (void *)(g_gameUiBase + RVA_BUTTON_VTABLE);
+    return vt == (void *)(g_gameUiBase + RVA_BUTTON_VTABLE)
+        || vt == (void *)(g_gameUiBase + RVA_FRAMEBUTTON_VTABLE);
 }
 
 static int IsStaticTextPanel(void *thisPtr)
@@ -247,6 +255,37 @@ static int IsProgressBar(void *thisPtr)
     }
     vt = *(void **)thisPtr;
     return vt == (void *)(g_gameUiBase + RVA_PROGRESSBAR_VTABLE);
+}
+
+static int IsTitleCloseButton(void *thisPtr)
+{
+    int w = 0, h = 0;
+    const char *name;
+    void *vt;
+    if (thisPtr == NULL || g_GetSize == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 10 || h < 10 || w > 32 || h > 32) {
+        return 0;
+    }
+    if (g_GetPos != NULL) {
+        int x = 0;
+        int y = 0;
+        g_GetPos(thisPtr, &x, &y);
+        if (y > 36) {
+            return 0;
+        }
+    }
+    vt = *(void **)thisPtr;
+    if (vt == (void *)(g_gameUiBase + RVA_FRAMEBUTTON_VTABLE)) {
+        return 1;
+    }
+    name = PanelName(thisPtr);
+    if (lstrcmpiA(name, "close") == 0 || lstrcmpiA(name, "CloseButton") == 0) {
+        return 1;
+    }
+    return 0;
 }
 
 static int VtableFlag(void *thisPtr, unsigned vtOff)
@@ -891,11 +930,58 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
     }
 }
 
+static void PaintMacCloseDot(void *thisPtr)
+{
+    int w = 0, h = 0;
+    int x = 0;
+    int y = 0;
+    int d;
+    int ox;
+    int oy;
+    unsigned int rgb;
+    if (g_GetSize == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (g_GetPos != NULL) {
+        g_GetPos(thisPtr, &x, &y);
+    }
+    /* Stock Frame parks this on the top-right corner; our 12px window
+     * radius clips it into a wedge. Pull it in once (stock is ~18–20px). */
+    if (g_SetSize != NULL && g_SetPos != NULL && w >= 18) {
+        g_SetSize(thisPtr, 16, 16);
+        g_SetPos(thisPtr, x - 2, 10);
+        w = 16;
+        h = 16;
+    }
+    d = 12;
+    ox = (w - d) / 2;
+    oy = (h - d) / 2;
+    EnsureSurfaceHooks();
+    if (VtableFlag(thisPtr, OFF_BUTTON_ISDEPRESSED_VT)) {
+        rgb = 0xBF4942u;
+    } else if (ControlIsHot(thisPtr)) {
+        rgb = 0xFF8B86u;
+    } else {
+        rgb = 0xFF5F57u;
+    }
+    DrawPillAt(ox, oy, d, d, ThemeRgbPacked(rgb));
+}
+
 static void __fastcall ButtonPaint_Hook(void *thisPtr)
 {
-    int roundBtn = ShouldRoundButton(thisPtr);
-    int tab = IsPageTab(thisPtr);
-    int tabHot = tab && ControlIsHot(thisPtr);
+    int roundBtn;
+    int tab;
+    int tabHot;
+
+    if (IsTitleCloseButton(thisPtr)) {
+        PaintMacCloseDot(thisPtr);
+        return;
+    }
+
+    roundBtn = ShouldRoundButton(thisPtr);
+    tab = IsPageTab(thisPtr);
+    tabHot = tab && ControlIsHot(thisPtr);
 
     if (roundBtn) {
         ForceWhiteOnTransparent(thisPtr);
@@ -1022,7 +1108,7 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
 
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
-    if (IsProgressBar(thisPtr)) {
+    if (IsProgressBar(thisPtr) || IsTitleCloseButton(thisPtr)) {
         return;
     }
     if (InterlockedCompareExchange(&g_roundDisabled, 0, 0) != 0) {
@@ -1060,7 +1146,9 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     g_surfaceHooked = 0;
     g_roundActive = 0;
     g_gameUiBase = base;
+    g_SetPos = (SetPosFn)(base + RVA_SETPOS);
     g_GetPos = (GetPosFn)(base + RVA_GETPOS);
+    g_SetSize = (SetSizeFn)(base + RVA_SETSIZE);
     g_GetSize = (GetSizeFn)(base + RVA_GETSIZE);
     g_GetSurface = (GetSurfaceFn)(base + RVA_GETSURFACE);
 

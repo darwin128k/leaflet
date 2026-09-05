@@ -184,33 +184,39 @@ static void InstallPropertySheetLayoutHook(BYTE *base);
  * (tall, wide) sit back-to-back right after the base-ctor call, verified by
  * byte match before patching, same as every other binary patch in this
  * file. */
-#define RVA_OPTIONSDIALOG_WIDTH_PUSH 0x000377d7u /* PUSH 0x200 (wide); PUSH 0x196 (tall) is the instruction just before, at 0x377d2 -- args pushed right-to-left for SetBounds(this,x=0,y=0,wide,tall) */
-#define OPTIONSDIALOG_STOCK_WIDE 0x200u /* 512, matches the decompiled SetBounds call */
-#define OPTIONSDIALOG_NEW_WIDE   0x280u /* 640 -- +128px, enough to absorb the left tab column and keep the original ~50px margin the widest sub-page content needs */
+#define RVA_OPTIONSDIALOG_TALL_PUSH  0x000377d2u /* PUSH 0x196 (tall) */
+#define RVA_OPTIONSDIALOG_WIDTH_PUSH 0x000377d7u /* PUSH 0x200 (wide); args right-to-left for SetBounds(this,x=0,y=0,wide,tall) */
+#define OPTIONSDIALOG_STOCK_WIDE 0x200u /* 512 */
+#define OPTIONSDIALOG_NEW_WIDE   0x280u /* 640 -- absorbs the left tab column */
+#define OPTIONSDIALOG_STOCK_TALL 0x196u /* 406 */
+#define OPTIONSDIALOG_NEW_TALL   0x1BEu /* 446 -- +40px so OK/Cancel/Apply and the video-restart note aren't flush with the bottom edge */
 
-static void PatchOptionsDialogWidth(BYTE *base)
+static int PatchPushImm32(BYTE *target, DWORD expected, DWORD replacement, const char *tag)
 {
-    static const BYTE kExpectedPush[5] = { 0x68, 0x00, 0x02, 0x00, 0x00 }; /* PUSH 0x200 */
-    BYTE *target = base + RVA_OPTIONSDIALOG_WIDTH_PUSH;
+    static const BYTE kPush = 0x68;
     DWORD oldProtect;
-    DWORD newWide = OPTIONSDIALOG_NEW_WIDE;
 
-    if (memcmp(target, kExpectedPush, sizeof(kExpectedPush)) != 0) {
-        HookLog("PatchOptionsDialogWidth: prologue mismatch at %p (already patched or wrong build), skip",
-                (void *)target);
-        return;
+    if (target[0] != kPush || memcmp(target + 1, &expected, 4) != 0) {
+        HookLog("%s: prologue mismatch at %p (already patched or wrong build), skip", tag, (void *)target);
+        return 0;
     }
-
-    if (!VirtualProtect(target, sizeof(kExpectedPush), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        HookLog("PatchOptionsDialogWidth: VirtualProtect FAILED, GetLastError=%lu", GetLastError());
-        return;
+    if (!VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        HookLog("%s: VirtualProtect FAILED, GetLastError=%lu", tag, GetLastError());
+        return 0;
     }
+    memcpy(target + 1, &replacement, 4);
+    VirtualProtect(target, 5, oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, 5);
+    HookLog("%s: patched %p, %u -> %u", tag, (void *)target, expected, replacement);
+    return 1;
+}
 
-    memcpy(target + 1, &newWide, sizeof(newWide));
-
-    VirtualProtect(target, sizeof(kExpectedPush), oldProtect, &oldProtect);
-    FlushInstructionCache(GetCurrentProcess(), target, sizeof(kExpectedPush));
-    HookLog("PatchOptionsDialogWidth: patched %p, wide %u -> %u", (void *)target, OPTIONSDIALOG_STOCK_WIDE, newWide);
+static void PatchOptionsDialogSize(BYTE *base)
+{
+    PatchPushImm32(base + RVA_OPTIONSDIALOG_WIDTH_PUSH, OPTIONSDIALOG_STOCK_WIDE,
+                   OPTIONSDIALOG_NEW_WIDE, "PatchOptionsDialogSize/wide");
+    PatchPushImm32(base + RVA_OPTIONSDIALOG_TALL_PUSH, OPTIONSDIALOG_STOCK_TALL,
+                   OPTIONSDIALOG_NEW_TALL, "PatchOptionsDialogSize/tall");
 }
 
 void LayoutHook_Init(HMODULE hOriginalGameUI)
@@ -234,7 +240,7 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     InstallPaintBackgroundHook(base);
     InstallBasePanelLayoutHook(base);
     InstallPropertySheetLayoutHook(base);
-    PatchOptionsDialogWidth(base);
+    PatchOptionsDialogSize(base);
     RoundFrame_Init(hOriginalGameUI);
     Prefetch_Bind(hOriginalGameUI);
 }

@@ -15,6 +15,7 @@ typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsi
 #define RVA_GETSIZE               0x00043780u
 #define RVA_GETSURFACE            0x0003f040u
 #define RVA_PANEL_PAINTBACKGROUND 0x00043d60u
+#define RVA_BUTTON_DRAWFOCUS      0x000407e0u /* Button::DrawFocusBox — dashed keyboard-focus rect */
 #define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
 #define RVA_BUTTON_VTABLE         0x0009caccu /* vgui2::Button vtable; Label/CheckButton/PageTab differ */
 #define RVA_LABEL_VTABLE          0x0009cdf4u
@@ -888,4 +889,23 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     InstallNearHook(base + RVA_PAINTBORDER, 7, kBorderPrologue,
                     g_paintBorderTramp, sizeof(g_paintBorderTramp),
                     (void *)PaintBorder_Hook, &g_origPaintBorder, "PaintBorder");
+
+    /* Default/OK buttons and tabs draw a dotted inset rect on focus.
+     * Scheme ButtonKeyFocusBorder is already empty; this is a code path. */
+    {
+        BYTE *focus = base + RVA_BUTTON_DRAWFOCUS;
+        DWORD oldProtect;
+        if (focus[0] == 0x53 && focus[1] == 0x55 && focus[2] == 0x56) {
+            if (VirtualProtect(focus, 3, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                /* thiscall + 4 stack args; a bare ret left 16 bytes and
+                 * crashed on the next tab click. */
+                focus[0] = 0xC2;
+                focus[1] = 0x10;
+                focus[2] = 0x00;
+                VirtualProtect(focus, 3, oldProtect, &oldProtect);
+                FlushInstructionCache(GetCurrentProcess(), focus, 3);
+                HookLog("RoundFrame: DrawFocusBox disabled");
+            }
+        }
+    }
 }

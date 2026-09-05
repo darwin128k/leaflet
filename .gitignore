@@ -1,5 +1,7 @@
 # CMake build tree
 build/
+_deps/
+
 
 # Not redistributed
 orig/

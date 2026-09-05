@@ -147,6 +147,7 @@ static DWORD WINAPI WatchGameUI(LPVOID unused)
                 InstallOn(h);
             }
         }
+        LayoutHook_Tick();
         Sleep(100);
     }
 }

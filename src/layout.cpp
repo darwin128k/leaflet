@@ -2,6 +2,7 @@
 #include "log.h"
 #include "bgswitch.h"
 #include "roundframe.h"
+#include "prefetch.h"
 #include <math.h>
 #include <string.h>
 
@@ -53,6 +54,9 @@ static volatile LONG g_paintDisabled = 0;
 static volatile LONG g_propSheetLayoutDisabled = 0;
 static int g_tabColumnMaxWide = 0; /* high-water mark across layout passes -- see PropertySheetLayout_Hook */
 static int g_tabColumnMaxTall = 0;
+static int g_lastMainVisibleCount = 4;
+static volatile LONG g_hideGameMenuForConnect = 0;
+static volatile DWORD g_lastGameMenuLayoutTick = 0;
 
 #define MENU_ITEM_BG_PATH "gfx/vgui/menu_item_bg"
 #define MENU_ITEM_BG_ARMED_PATH "gfx/vgui/menu_item_bg_armed"
@@ -232,6 +236,17 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     InstallPropertySheetLayoutHook(base);
     PatchOptionsDialogWidth(base);
     RoundFrame_Init(hOriginalGameUI);
+    Prefetch_Bind(hOriginalGameUI);
+}
+
+void LayoutHook_Tick(void)
+{
+    DWORD now = GetTickCount();
+    DWORD last = (DWORD)InterlockedCompareExchange((volatile LONG *)&g_lastGameMenuLayoutTick, 0, 0);
+    if (InterlockedCompareExchange(&g_hideGameMenuForConnect, 0, 0) != 0
+        && last != 0 && now - last > 400) {
+        InterlockedExchange(&g_hideGameMenuForConnect, 0);
+    }
 }
 
 static int ItemIsVisible(void *item)
@@ -994,15 +1009,34 @@ static void LayoutHook_Inner(void *thisPtr)
      * as much as possible. */
     const char *panelName = *(const char **)((char *)thisPtr + OFF_PANEL_NAME);
     int isMainMenu = (panelName != NULL && strcmp(panelName, MAIN_MENU_PANEL_NAME) == 0);
-    HookLog("LayoutHook_ReplacementEntry: panelName=%s isMainMenu=%d", panelName != NULL ? panelName : "(null)", isMainMenu);
+    HookLog("LayoutHook_ReplacementEntry: panelName=%s isMainMenu=%d visibleCount=%d",
+            panelName != NULL ? panelName : "(null)", isMainMenu, visibleCount);
 
     if (isMainMenu) {
-        /* By now the engine has fully applied whatever video mode the
-         * player picked (unlike DLL-load time, when the desktop hadn't
-         * necessarily switched into it yet), so this is the right moment
-         * to pick the matching background tile set. No-ops after the
-         * first call this process. */
+        Prefetch_Pump();
+        InterlockedExchange((volatile LONG *)&g_lastGameMenuLayoutTick, (LONG)GetTickCount());
         BgSwitch_RunOnceIfNeeded();
+        if (visibleCount == 4) {
+            g_lastMainVisibleCount = 4;
+            InterlockedExchange(&g_hideGameMenuForConnect, 0);
+        } else {
+            if (g_lastMainVisibleCount == 4) {
+                InterlockedExchange(&g_hideGameMenuForConnect, 1);
+                Prefetch_OnConnect();
+            }
+            g_lastMainVisibleCount = visibleCount;
+            if (InterlockedCompareExchange(&g_hideGameMenuForConnect, 0, 0) != 0
+                && g_SetPos != NULL) {
+                /* Connecting: engine shows LoadingDialog. Our sidebar would
+                 * pin Resume/Disconnect to the left and cover that window. */
+                g_SetPos(thisPtr, -4000, -4000);
+                if (g_SetSize != NULL) {
+                    g_SetSize(thisPtr, 1, 1);
+                }
+                HookLog("LayoutHook_ReplacementEntry: hide GameMenu during connect");
+                return;
+            }
+        }
     }
 
     if (!isMainMenu) {

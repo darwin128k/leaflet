@@ -7,6 +7,7 @@
  * the Menu::PaintBackground trampoline (row backdrop image). Must be
  * called once after GameUI.dll is mapped, before the PerformLayout JMP. */
 void LayoutHook_Init(HMODULE hOriginalGameUI);
+void LayoutHook_Tick(void);
 
 /* Replacement for CGameMenu's internal layout routine (was FUN_1006afb0 at
  * RVA 0x6afb0 in the Nov-2020 GameUI.dll build). Arranges menu items in a

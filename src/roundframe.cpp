@@ -925,9 +925,8 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
     if (p > 1.0f) {
         p = 1.0f;
     }
-    /* 12px stadium — same height as overlay.cpp BTN_H. 6px was a 1px
-     * chamfer that read as a rectangle plus a dirty seam on the leading edge. */
-    barH = 12;
+    /* Same 6px stadium as overlay.cpp prefetch lv_bar (BTN_H). */
+    barH = 6;
     if (barH > h - 2) {
         barH = h - 2;
     }
@@ -941,13 +940,28 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
     DrawPillAt(0, y, w, barH, ThemeRgbPacked(g_theme.trackRgb));
     fillW = (int)(p * (float)w + 0.5f);
     if (fillW > 0) {
+        int row;
         if (fillW < barH) {
             fillW = barH;
         }
         if (fillW > w) {
             fillW = w;
         }
-        DrawPillAt(0, y, fillW, barH, ThemeRgbPacked(g_theme.accentRgb));
+        for (row = 0; row < barH; row++) {
+            int inset = PillInset(row, barH);
+            int xL = inset;
+            int xTrackR = w - inset;
+            int xFillR = fillW - inset;
+            if (xL < 0) {
+                xL = 0;
+            }
+            if (xFillR > xTrackR) {
+                xFillR = xTrackR;
+            }
+            if (xFillR > xL) {
+                SurfaceFill(xL, y + row, xFillR, y + row + 1, ThemeRgbPacked(g_theme.accentRgb));
+            }
+        }
     }
 }
 

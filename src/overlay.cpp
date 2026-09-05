@@ -40,7 +40,7 @@ void Overlay_Start(void)
 #define WIN_W_MAX      420
 #define WIN_PAD        16
 #define WIN_GAP        8
-#define BTN_H          12
+#define BTN_H          6
 
 static volatile LONG g_started = 0;
 

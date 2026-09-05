@@ -1,4 +1,5 @@
 #include "roundframe.h"
+#include "scheme.h"
 #include "log.h"
 #include <string.h>
 
@@ -50,6 +51,7 @@ static int g_roundW = 0;
 static int g_roundH = 0;
 static int g_roundR = 0;
 static unsigned int g_curColor = 0xE0101410u;
+static OverlayTheme g_theme;
 
 /* Captured from the main-body fill inside DrawFilledRect_Hook so
  * RunRoundedBackground can trace a stroke around the exact same rounded
@@ -62,8 +64,26 @@ static int g_edgeRoundTop = 0;
 static int g_edgeRoundBottom = 0;
 static unsigned int g_edgeBodyColor = 0;
 
-#define BORDER_STROKE_THICKNESS 2
-#define BORDER_STROKE_LIGHTEN   55
+static unsigned int ThemeStrokePacked(void)
+{
+    uint32_t rgb = g_theme.borderRgb;
+    unsigned int r = (rgb >> 16) & 0xFFu;
+    unsigned int g = (rgb >> 8) & 0xFFu;
+    unsigned int b = rgb & 0xFFu;
+    return (0xFFu << 24) | (b << 16) | (g << 8) | r;
+}
+
+static int ThemeStrokeThickness(void)
+{
+    int t = g_theme.borderWidth;
+    if (t < 1) {
+        t = 1;
+    }
+    if (t > 4) {
+        t = 4;
+    }
+    return t;
+}
 
 static int ISqrt(int n)
 {
@@ -91,20 +111,6 @@ static int ClampInt(int v, int lo, int hi)
         return hi;
     }
     return v;
-}
-
-/* Valve Color is [r,g,b,a] little-endian bytes, i.e. r is the low byte.
- * Lighten each channel for a subtle stroke tint and force full alpha so
- * the ring reads crisply regardless of the body panel's own alpha. */
-static unsigned int ShadeLighter(unsigned int packedRgba, int delta)
-{
-    unsigned int r = packedRgba & 0xFFu;
-    unsigned int g = (packedRgba >> 8) & 0xFFu;
-    unsigned int b = (packedRgba >> 16) & 0xFFu;
-    r = (unsigned int)ClampInt((int)r + delta, 0, 255);
-    g = (unsigned int)ClampInt((int)g + delta, 0, 255);
-    b = (unsigned int)ClampInt((int)b + delta, 0, 255);
-    return (0xFFu << 24) | (b << 16) | (g << 8) | r;
 }
 
 /* Bigger windows get a bigger radius; tiny query boxes stay tight. */
@@ -443,8 +449,8 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
              * lightened tint of the body color, then the same body color
              * inset by the stroke thickness to leave just the ring. */
             if (g_edgeCaptured) {
-                int thickness = BORDER_STROKE_THICKNESS;
-                unsigned int strokeColor = ShadeLighter(g_edgeBodyColor, BORDER_STROKE_LIGHTEN);
+                int thickness = ThemeStrokeThickness();
+                unsigned int strokeColor = ThemeStrokePacked();
                 int innerW = w - thickness * 2;
                 int innerH = h - thickness * 2;
                 int innerR = g_roundR - thickness;
@@ -584,6 +590,9 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     g_gameUiBase = base;
     g_GetSize = (GetSizeFn)(base + RVA_GETSIZE);
     g_GetSurface = (GetSurfaceFn)(base + RVA_GETSURFACE);
+
+    OverlayTheme_Load(&g_theme);
+    HookLog("RoundFrame: stroke rgb=%06X width=%d", g_theme.borderRgb, g_theme.borderWidth);
 
     InstallNearHook(base + RVA_FRAME_PAINTBACKGROUND, 6, kFrameBgPrologue,
                     g_framePaintBgTramp, sizeof(g_framePaintBgTramp),

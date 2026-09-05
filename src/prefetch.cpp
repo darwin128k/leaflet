@@ -169,7 +169,7 @@ static int CurlGet(CURL *curl, const char *url, const char *destPath)
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "leaflet/1.0");
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 180L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, XferInfo);
@@ -258,6 +258,31 @@ static void AddUnique(std::vector<std::string> *list, const char *rel)
     list->push_back(rel);
 }
 
+static int EndsWithI(const char *s, const char *suffix)
+{
+    size_t n;
+    size_t m;
+    if (s == NULL || suffix == NULL) {
+        return 0;
+    }
+    n = strlen(s);
+    m = strlen(suffix);
+    if (m > n) {
+        return 0;
+    }
+    return _stricmp(s + (n - m), suffix) == 0;
+}
+
+/* .res often lists itself (Calou-style). Downloading that again is a loop. */
+static int IsOptionalResEntry(const char *rel, const char *resPath)
+{
+    (void)resPath;
+    if (rel == NULL || rel[0] == '\0') {
+        return 1;
+    }
+    return EndsWithI(rel, ".res");
+}
+
 static void ParseResFile(const char *path, std::vector<std::string> *list)
 {
     FILE *f;
@@ -308,6 +333,9 @@ static void ParseResFile(const char *path, std::vector<std::string> *list)
                 || strstr(token, ".bsp") || strstr(token, ".mdl") || strstr(token, ".spr")
                 || strstr(token, ".wad") || strstr(token, ".tga") || strstr(token, ".res")
                 || strstr(token, ".txt")) {
+                if (IsOptionalResEntry(token, path)) {
+                    continue;
+                }
                 AddUnique(list, token);
             }
         }

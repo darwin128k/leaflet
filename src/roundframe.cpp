@@ -8,11 +8,27 @@ typedef void(__thiscall *PaintFn)(void *self);
 typedef void *(__cdecl *GetSurfaceFn)(void);
 typedef void(__thiscall *SurfDrawSetColorFn)(void *surf, unsigned int packedRgba);
 typedef void(__thiscall *SurfDrawFilledRectFn)(void *surf, int x0, int y0, int x1, int y1);
+typedef char(__thiscall *ByteGetterFn)(void *self);
+typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
+typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
 
 #define RVA_GETSIZE               0x00043780u
 #define RVA_GETSURFACE            0x0003f040u
 #define RVA_PANEL_PAINTBACKGROUND 0x00043d60u
 #define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
+#define RVA_BUTTON_VTABLE         0x0009caccu /* vgui2::Button vtable; Label/CheckButton/PageTab differ */
+#define RVA_PAGETAB_VTABLE        0x000a482cu
+#define OFF_BUTTON_ISARMED_VT     0x2a4
+#define OFF_BUTTON_ISDEPRESSED_VT 0x2a8
+#define OFF_BUTTON_ISSELECTED_VT  0x2b8
+#define OFF_BUTTON_SETDEFAULTCOLOR_VT 0x2ec
+#define OFF_BUTTON_SETARMEDCOLOR_VT   0x2f0
+#define OFF_BUTTON_SETSELECTEDCOLOR_VT 0x2f4
+#define OFF_SETFGCOLOR_VT         0xD0 /* Button/Label::SetFgColor — also updates TextImage */
+#define OFF_PAGETAB_ACTIVE        0x108
+#define OFF_PAGETAB_ACTIVE_FG     0x109
+#define COLOR_FG_WHITE            0xFFF7F5F5u /* r,g,b,a little-endian */
+#define COLOR_BG_TRANSPARENT      0x00000000u
 #define RVA_FRAME_PAINTBACKGROUND 0x0004cb60u /* Frame/PropertyDialog/MessageBox/COptionsDialog */
 #define RVA_CAREER_PAINTBACKGROUND 0x00002070u
 #define RVA_PAINTBACKGROUND_18530 0x00018530u
@@ -54,6 +70,7 @@ static int g_roundW = 0;
 static int g_roundH = 0;
 static int g_roundR = 0;
 static int g_roundIsButton = 0;
+static int g_roundHot = 0;
 static unsigned int g_curColor = 0xE0101410u;
 static OverlayTheme g_theme;
 
@@ -67,6 +84,10 @@ static int g_edgeY = 0;
 static int g_edgeRoundTop = 0;
 static int g_edgeRoundBottom = 0;
 static unsigned int g_edgeBodyColor = 0;
+
+static void EnsureSurfaceHooks(void);
+static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
+                              int roundTop, int roundBottom);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
 {
@@ -176,17 +197,108 @@ static int NameIsOptionsTab(const char *name)
 
 static int NameIsMenuChrome(const char *name);
 
-static int NameIsDialogButton(const char *name)
+static int IsVguiButton(void *thisPtr)
 {
-    if (name == NULL || name[0] == '\0') {
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
         return 0;
     }
-    if (lstrcmpiA(name, "OK") == 0 || lstrcmpiA(name, "Cancel") == 0
-        || lstrcmpiA(name, "Apply") == 0 || lstrcmpiA(name, "Advanced") == 0
-        || lstrcmpiA(name, "Close") == 0) {
-        return 1;
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_BUTTON_VTABLE);
+}
+
+static int IsPageTab(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
     }
-    return 0;
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_PAGETAB_VTABLE);
+}
+
+static int VtableFlag(void *thisPtr, unsigned vtOff)
+{
+    void **vtable;
+    ByteGetterFn fn;
+    if (thisPtr == NULL) {
+        return 0;
+    }
+    vtable = *(void ***)thisPtr;
+    if (vtable == NULL) {
+        return 0;
+    }
+    fn = (ByteGetterFn)vtable[vtOff / sizeof(void *)];
+    if (fn == NULL) {
+        return 0;
+    }
+    return fn(thisPtr) != 0;
+}
+
+static int ControlIsHot(void *thisPtr)
+{
+    if (IsPageTab(thisPtr)) {
+        if (*((unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE) != 0) {
+            return 1;
+        }
+    }
+    return VtableFlag(thisPtr, OFF_BUTTON_ISARMED_VT)
+        || VtableFlag(thisPtr, OFF_BUTTON_ISDEPRESSED_VT)
+        || VtableFlag(thisPtr, OFF_BUTTON_ISSELECTED_VT);
+}
+
+static void ForceWhiteOnTransparent(void *thisPtr)
+{
+    void **vtable;
+    SetTwoColorsFn setDefaultColor;
+    SetTwoColorsFn setArmedColor;
+    SetTwoColorsFn setSelectedColor;
+    if (thisPtr == NULL) {
+        return;
+    }
+    vtable = *(void ***)thisPtr;
+    setDefaultColor = (SetTwoColorsFn)vtable[OFF_BUTTON_SETDEFAULTCOLOR_VT / sizeof(void *)];
+    setArmedColor = (SetTwoColorsFn)vtable[OFF_BUTTON_SETARMEDCOLOR_VT / sizeof(void *)];
+    setSelectedColor = (SetTwoColorsFn)vtable[OFF_BUTTON_SETSELECTEDCOLOR_VT / sizeof(void *)];
+    setDefaultColor(thisPtr, COLOR_FG_WHITE, COLOR_BG_TRANSPARENT);
+    setArmedColor(thisPtr, COLOR_FG_WHITE, COLOR_BG_TRANSPARENT);
+    setSelectedColor(thisPtr, COLOR_FG_WHITE, COLOR_BG_TRANSPARENT);
+}
+
+static void SetFgColorWhite(void *thisPtr)
+{
+    void **vtable;
+    SetPackedColorFn setFg;
+    if (thisPtr == NULL) {
+        return;
+    }
+    vtable = *(void ***)thisPtr;
+    setFg = (SetPackedColorFn)vtable[OFF_SETFGCOLOR_VT / sizeof(void *)];
+    if (setFg != NULL) {
+        setFg(thisPtr, COLOR_FG_WHITE);
+    }
+}
+
+static void PaintControlPlate(void *thisPtr)
+{
+    int w = 0, h = 0;
+    int r;
+    unsigned int fill;
+    if (g_GetSize == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 8 || h < 8) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    r = (h < 20) ? 4 : 8;
+    if (r * 2 > h) {
+        r = h / 2;
+    }
+    fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
+                                 : ThemeRgbPacked(g_theme.trackRgb);
+    DrawRoundedFillAt(0, 0, w, h, r, fill, 1, 1);
 }
 
 static int ShouldRoundButton(void *thisPtr)
@@ -194,6 +306,11 @@ static int ShouldRoundButton(void *thisPtr)
     int w = 0, h = 0;
     const char *name;
     if (g_GetSize == NULL || thisPtr == NULL) {
+        return 0;
+    }
+    /* Exact vgui2::Button only. Labels, checkboxes, combo arrows and
+     * page tabs share similar sizes / Paint but have other vtables. */
+    if (!IsVguiButton(thisPtr)) {
         return 0;
     }
     g_GetSize(thisPtr, &w, &h);
@@ -204,16 +321,7 @@ static int ShouldRoundButton(void *thisPtr)
     if (NameIsMenuChrome(name) || NameIsOptionsTab(name)) {
         return 0;
     }
-    /* PropertyDialog names stay English (OK/Cancel/Apply) even when the
-     * caption is localized -- those labels can make the control wider
-     * than the old 130px cap. */
-    if (NameIsDialogButton(name)) {
-        return 1;
-    }
-    if (w >= 40 && w <= 280 && h >= 18 && h <= 32) {
-        return 1;
-    }
-    return 0;
+    return 1;
 }
 
 static int NameContainsI(const char *hay, const char *needle)
@@ -417,7 +525,8 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
             r = 3;
         }
         {
-            unsigned int fill = ThemeRgbPacked(g_theme.trackRgb);
+            unsigned int fill = g_roundHot ? ThemeRgbPacked(g_theme.accentRgb)
+                                           : ThemeRgbPacked(g_theme.trackRgb);
             g_edgeCaptured = 1;
             g_edgeX = x0;
             g_edgeY = y0;
@@ -520,17 +629,21 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
             g_roundW = w;
             g_roundH = h;
             g_roundIsButton = isBtn;
+            g_roundHot = isBtn && ControlIsHot(thisPtr);
             g_roundR = isBtn ? 8 : RadiusForSize(w, h);
             g_roundActive = 1;
             g_edgeCaptured = 0;
             orig(thisPtr);
             g_roundActive = 0;
             g_roundIsButton = 0;
+            g_roundHot = 0;
 
             if (isBtn) {
                 int px = g_edgeCaptured ? g_edgeX : 0;
                 int py = g_edgeCaptured ? g_edgeY : 0;
-                DrawRoundedFillAt(px, py, w, h, 8, ThemeRgbPacked(g_theme.trackRgb), 1, 1);
+                unsigned int fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
+                                                          : ThemeRgbPacked(g_theme.trackRgb);
+                DrawRoundedFillAt(px, py, w, h, 8, fill, 1, 1);
             } else if (g_edgeCaptured) {
                 int thickness = ThemeStrokeThickness();
                 unsigned int strokeColor = ThemeStrokePacked();
@@ -620,22 +733,40 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
 
 static void __fastcall ButtonPaint_Hook(void *thisPtr)
 {
-    /* Paint Traverse draws PaintBackground then Paint. Dialog buttons
-     * often skip a visible fill (transparent scheme bg) so the plate
-     * has to be painted here, immediately under the label. */
-    if (ShouldRoundButton(thisPtr) && g_GetSize != NULL) {
-        int w = 0, h = 0;
-        int r;
-        g_GetSize(thisPtr, &w, &h);
-        EnsureSurfaceHooks();
-        r = (h < 20) ? 4 : 8;
-        if (r * 2 > h) {
-            r = h / 2;
-        }
-        DrawRoundedFillAt(0, 0, w, h, r, ThemeRgbPacked(g_theme.trackRgb), 1, 1);
+    int roundBtn = ShouldRoundButton(thisPtr);
+    int tab = IsPageTab(thisPtr);
+    int tabHot = tab && ControlIsHot(thisPtr);
+
+    if (roundBtn) {
+        ForceWhiteOnTransparent(thisPtr);
+        SetFgColorWhite(thisPtr);
+        PaintControlPlate(thisPtr);
+    } else if (tabHot) {
+        unsigned char *fg = (unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE_FG;
+        /* Selected colour at +0x109, idle/hover colour at +0x10D. */
+        fg[0] = 245;
+        fg[1] = 245;
+        fg[2] = 247;
+        fg[3] = 255;
+        fg[4] = 245;
+        fg[5] = 245;
+        fg[6] = 247;
+        fg[7] = 255;
+        ForceWhiteOnTransparent(thisPtr);
+        SetFgColorWhite(thisPtr);
+        PaintControlPlate(thisPtr);
     }
     if (g_origButtonPaint != NULL) {
         g_origButtonPaint(thisPtr);
+    }
+    /* PageTab::Paint can re-apply scheme (blue selected text) after our
+     * SetFgColor. Hover fixed it because SetArmed runs SetFgColor again.
+     * Repeat the same on the first frame so the TextImage is white. */
+    if (tabHot) {
+        SetFgColorWhite(thisPtr);
+        if (g_origButtonPaint != NULL) {
+            g_origButtonPaint(thisPtr);
+        }
     }
 }
 

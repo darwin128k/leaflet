@@ -59,6 +59,7 @@ static AddPageFn g_origPropDialogAddPage = NULL;
 static BYTE g_propDialogAddPageTrampoline[32];
 static PerformLayoutFn g_origPanelListLayout = NULL;
 static BYTE g_panelListLayoutTrampoline[32];
+static PerformLayoutFn g_origVideoPageLayout = NULL;
 static GameUiNewFn g_gameUiNew = NULL;
 static PageCtorFn g_multiAdvPageCtor = NULL;
 static FindChildByNameFn g_FindChildByName = NULL;
@@ -86,6 +87,8 @@ static void InstallPropertySheetLayoutHook(BYTE *base);
 static void InstallAdvancedOptionsTab(BYTE *base);
 static void InstallPanelListPaddingHook(BYTE *base);
 
+#define RVA_COPTIONSSUBVIDEO_VTABLE 0x0009c58cu
+#define VT_PERFORMLAYOUT_INDEX 111
 #define RVA_FINDCHILDBYNAME 0x00044100u /* vgui2::Panel::FindChildByName(const char*, bool); ret 8 */
 #define RVA_GETCHILDCOUNT   0x00046260u /* Panel::GetChildCount(); eax count */
 #define RVA_GETCHILD        0x00046280u /* Panel::GetChild(int); ret 4 */
@@ -378,6 +381,101 @@ static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h
     }
 }
 
+static void FitVideoPage(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    const int rowH = 28;
+    const int comboH = 24;
+    const int labelH = 20;
+    const int gap = 5;
+    const int leftW = 200;
+    int rightX;
+    int rightW;
+    int y;
+    int rightY;
+    int slidersY;
+    if (page == NULL || pageW < 80 || pageH < 80) {
+        return;
+    }
+    if (LayoutFindChild(page, "Windowed") == NULL
+        && LayoutFindChild(page, "Renderer") == NULL) {
+        return;
+    }
+    rightX = pad + leftW + pad;
+    rightW = pageW - pad - rightX;
+    if (rightW < 160) {
+        rightX = pageW / 2;
+        rightW = pageW - pad - rightX;
+    }
+    y = pad;
+    LayoutNamed(page, "Label2", pad, y, leftW, labelH);
+    LayoutNamed(page, "Renderer", pad, y + labelH, leftW, comboH);
+    y += labelH + comboH + gap;
+    LayoutNamed(page, "Label1", pad, y, leftW, labelH);
+    LayoutNamed(page, "Resolution", pad, y + labelH, leftW, comboH);
+    y += labelH + comboH + gap;
+    LayoutNamed(page, "Label4", pad, y, leftW, labelH);
+    LayoutNamed(page, "AspectRatio", pad, y + labelH, leftW, comboH);
+
+    rightY = pad;
+    LayoutNamed(page, "Windowed", rightX, rightY, rightW, rowH);
+    rightY += rowH + gap;
+    LayoutNamed(page, "VSync", rightX, rightY, rightW, rowH);
+    rightY += rowH + gap;
+    LayoutNamed(page, "HDModels", rightX, rightY, rightW, rowH);
+    rightY += rowH + gap;
+    LayoutNamed(page, "AddonsFolder", rightX, rightY, rightW, rowH);
+    rightY += rowH + gap;
+    LayoutNamed(page, "LowVideoDetail", rightX, rightY, rightW, 36);
+        rightY += 36 + gap;
+    LayoutNamed(page, "DetailTextures", rightX, rightY, rightW, rowH);
+    rightY += rowH + gap;
+
+    slidersY = y + labelH + comboH + 16;
+    if (rightY + 8 > slidersY) {
+        slidersY = rightY + 8;
+    }
+    LayoutNamed(page, "brightness label", pad, slidersY, leftW, 24);
+    LayoutNamed(page, "Gamma label", rightX, slidersY, rightW, 24);
+    LayoutNamed(page, "Brightness", pad, slidersY + 22, leftW, 50);
+    LayoutNamed(page, "Gamma", rightX, slidersY + 22, rightW > 160 ? 160 : rightW, 50);
+    LayoutNamed(page, "Label5", pad, slidersY + 74, pageW - pad * 2, 40);
+}
+
+static void __fastcall VideoPageLayout_Hook(void *thisPtr)
+{
+    int w = 0, h = 0;
+    if (g_origVideoPageLayout != NULL) {
+        g_origVideoPageLayout(thisPtr);
+    }
+    if (g_GetSize == NULL || thisPtr == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    FitVideoPage(thisPtr, w, h);
+}
+
+static void InstallVideoPageLayoutHook(BYTE *base)
+{
+    void **vt;
+    DWORD oldProtect;
+    vt = (void **)(base + RVA_COPTIONSSUBVIDEO_VTABLE);
+    if (IsBadReadPtr(vt, (VT_PERFORMLAYOUT_INDEX + 1) * sizeof(void *))) {
+        return;
+    }
+    g_origVideoPageLayout = (PerformLayoutFn)vt[VT_PERFORMLAYOUT_INDEX];
+    if (g_origVideoPageLayout == NULL) {
+        return;
+    }
+    if (!VirtualProtect(&vt[VT_PERFORMLAYOUT_INDEX], sizeof(void *), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return;
+    }
+    vt[VT_PERFORMLAYOUT_INDEX] = (void *)VideoPageLayout_Hook;
+    VirtualProtect(&vt[VT_PERFORMLAYOUT_INDEX], sizeof(void *), oldProtect, &oldProtect);
+    HookLog("InstallVideoPageLayoutHook: vt[%d] %p -> %p", VT_PERFORMLAYOUT_INDEX,
+            (void *)g_origVideoPageLayout, (void *)VideoPageLayout_Hook);
+}
+
 static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
@@ -482,51 +580,7 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
             g_SetPos(sensTitle, pad, y0 + 7 * rowStep + 8);
         }
     }
-    if (LayoutFindChild(page, "Renderer") != NULL
-        && LayoutFindChild(page, "Windowed") != NULL) {
-        const int rowH = 28;
-        const int comboH = 24;
-        const int labelH = 20;
-        const int gap = 5;
-        const int leftW = 200;
-        int rightX = pad + leftW + pad;
-        int rightW = pageW - pad - rightX;
-        int y;
-        int rightY;
-        int slidersY;
-        if (rightW < 160) {
-            rightX = pageW / 2;
-            rightW = pageW - pad - rightX;
-        }
-        y = pad;
-        LayoutNamed(page, "Label2", pad, y, leftW, labelH);
-        LayoutNamed(page, "Renderer", pad, y + labelH, leftW, comboH);
-        LayoutNamed(page, "Windowed", rightX, y + labelH, rightW, rowH);
-        y += labelH + comboH + gap;
-        LayoutNamed(page, "Label1", pad, y, leftW, labelH);
-        LayoutNamed(page, "Resolution", pad, y + labelH, leftW, comboH);
-        LayoutNamed(page, "VSync", rightX, y + labelH, rightW, rowH);
-        y += labelH + comboH + gap;
-        LayoutNamed(page, "Label4", pad, y, leftW, labelH);
-        LayoutNamed(page, "AspectRatio", pad, y + labelH, leftW, comboH);
-        LayoutNamed(page, "HDModels", rightX, y + labelH, rightW, rowH);
-        rightY = y + labelH + rowH + gap;
-        LayoutNamed(page, "AddonsFolder", rightX, rightY, rightW, rowH);
-        rightY += rowH + gap;
-        LayoutNamed(page, "LowVideoDetail", rightX, rightY, rightW, rowH);
-        rightY += rowH + gap;
-        LayoutNamed(page, "DetailTextures", rightX, rightY, rightW, rowH);
-        rightY += rowH + gap;
-        slidersY = y + labelH + comboH + 16;
-        if (rightY + 8 > slidersY) {
-            slidersY = rightY + 8;
-        }
-        LayoutNamed(page, "brightness label", pad, slidersY, leftW, 24);
-        LayoutNamed(page, "Gamma label", rightX, slidersY, rightW, 24);
-        LayoutNamed(page, "Brightness", pad, slidersY + 22, leftW, 50);
-        LayoutNamed(page, "Gamma", rightX, slidersY + 22, rightW > 160 ? 160 : rightW, 50);
-        LayoutNamed(page, "Label5", pad, slidersY + 74, pageW - pad * 2, 40);
-    }
+    FitVideoPage(page, pageW, pageH);
 }
 
 /* COptionsDialog::COptionsDialog (RVA 0x377c0) -- found via RTTI/xref to the
@@ -621,6 +675,7 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     InstallPropertySheetLayoutHook(base);
     InstallAdvancedOptionsTab(base);
     InstallPanelListPaddingHook(base);
+    InstallVideoPageLayoutHook(base);
     PatchOptionsDialogSize(base);
     RoundFrame_Init(hOriginalGameUI);
     Prefetch_Bind(hOriginalGameUI);

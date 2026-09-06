@@ -806,6 +806,12 @@ static void DrawToggleSwitch(void *thisPtr)
         x = 0;
     }
     y = (h - trackH) / 2;
+    if (lstrcmpiA(PanelName(thisPtr), "LowVideoDetail") == 0 && h > 32) {
+        y = (28 - trackH) / 2;
+        if (y < 0) {
+            y = 0;
+        }
+    }
     trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
     DrawPillAt(x, y, trackW, trackH, trackRgb);
     knob = trackH - 6;
@@ -842,7 +848,11 @@ static void PaintCvarToggleRow(void *thisPtr)
         setInset(thisPtr, 0, 0);
     }
     if (setAlign != NULL) {
-        setAlign(thisPtr, LABEL_ALIGN_WEST);
+        if (lstrcmpiA(PanelName(thisPtr), "LowVideoDetail") == 0) {
+            setAlign(thisPtr, 0); /* a_northwest — first line lines up with other rows */
+        } else {
+            setAlign(thisPtr, LABEL_ALIGN_WEST);
+        }
     }
     ForceWhiteOnTransparent(thisPtr);
     SetFgColorWhite(thisPtr);

@@ -18,6 +18,7 @@ typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
 typedef void(__thiscall *SetIntFn)(void *self, int value);
 typedef void(__thiscall *SetTextInsetFn)(void *self, int xInset, int yInset);
+typedef void(__thiscall *SetImageAtIndexFn)(void *self, int index, void *image, int preOffset);
 typedef void(__thiscall *SetBoolFn)(void *self, unsigned char value);
 typedef void(__thiscall *IImagePaintFn)(void *image);
 typedef void(__thiscall *IImageSetPosFn)(void *image, int x, int y);
@@ -35,6 +36,8 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_BUTTON_DRAWFOCUS      0x000407e0u /* Button::DrawFocusBox — dashed keyboard-focus rect */
 #define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
 #define RVA_BUTTON_VTABLE         0x0009caccu /* vgui2::Button vtable; Label/CheckButton/PageTab differ */
+#define RVA_CCVARTOGGLE_VTABLE    0x00097f9cu /* CCvarToggleCheckButton */
+#define RVA_DESCCHECKBUTTON_VTABLE 0x000a12f4u /* Advanced BOOL: CheckButton named DescCheckButton */
 #define RVA_FRAMEBUTTON_VTABLE    0x0009dd24u /* vgui2::FrameButton — caption close/min/max, not Button vt */
 #define RVA_FRAMESYSTEMBUTTON_VTABLE 0x0009e04cu /* FrameSystemButton (title Steam/menu) */
 #define RVA_LABEL_VTABLE          0x0009cdf4u
@@ -48,6 +51,8 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define OFF_BUTTON_SETSELECTEDCOLOR_VT 0x2f4
 #define OFF_BUTTON_SETCONTENTALIGNMENT_VT 0x22c /* Label::SetContentAlignment, same fn as MenuItem */
 #define OFF_BUTTON_SETTEXTINSET_VT        0x230 /* Label::SetTextInset(x,y) — leftover 6px west inset from scheme */
+#define OFF_LABEL_SETIMAGEATINDEX_VT      0x25c
+#define OFF_LABEL_TEXTIMAGE               0x78 /* TextImage* on Label; CheckButton keeps this */
 #define LABEL_ALIGN_CENTER 4 /* a_northwest=0 ... a_west=3, a_center=4 */
 #define LABEL_ALIGN_WEST   3
 #define OFF_SETFGCOLOR_VT         0xD0 /* Button/Label::SetFgColor — also updates TextImage */
@@ -697,9 +702,60 @@ static void PaintControlPlate(void *thisPtr)
     DrawRoundedFillAt(0, 0, w, h, r, fill, 1, 1);
 }
 
+static int IsMouseToggleName(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    return lstrcmpiA(name, "ReverseMouse") == 0
+        || lstrcmpiA(name, "MouseLook") == 0
+        || lstrcmpiA(name, "MouseFilter") == 0
+        || lstrcmpiA(name, "Joystick") == 0
+        || lstrcmpiA(name, "JoystickLook") == 0
+        || lstrcmpiA(name, "Auto-Aim") == 0
+        || lstrcmpiA(name, "RawInput") == 0;
+}
+
+static int IsVideoToggleName(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    return lstrcmpiA(name, "Windowed") == 0
+        || lstrcmpiA(name, "VSync") == 0
+        || lstrcmpiA(name, "HDModels") == 0
+        || lstrcmpiA(name, "AddonsFolder") == 0
+        || lstrcmpiA(name, "LowVideoDetail") == 0
+        || lstrcmpiA(name, "DetailTextures") == 0;
+}
+
 static int IsSettingsToggle(void *thisPtr)
 {
     return lstrcmpiA(PanelName(thisPtr), "CrosshairTranslucencyCheckbox") == 0;
+}
+
+static int IsCvarToggleRow(void *thisPtr)
+{
+    void *vt;
+    int w = 0, h = 0;
+    const char *name;
+    if (thisPtr == NULL || g_gameUiBase == NULL || g_GetSize == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    name = PanelName(thisPtr);
+    if (vt != (void *)(g_gameUiBase + RVA_CCVARTOGGLE_VTABLE)
+        && vt != (void *)(g_gameUiBase + RVA_DESCCHECKBUTTON_VTABLE)
+        && lstrcmpiA(name, "DescCheckButton") != 0
+        && !IsMouseToggleName(name)
+        && !IsVideoToggleName(name)) {
+        return 0;
+    }
+    if (IsSettingsToggle(thisPtr)) {
+        return 0;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    return w >= 36 && h >= 18 && h <= 40;
 }
 
 static int IsAdvancedSettingsRow(void *thisPtr)
@@ -755,6 +811,54 @@ static void DrawToggleSwitch(void *thisPtr)
     }
     DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
                0xF5F5F7u, trackRgb);
+}
+
+static void PaintCvarToggleRow(void *thisPtr)
+{
+    void **vtable;
+    SetIntFn setAlign;
+    SetTextInsetFn setInset;
+    SetImageAtIndexFn setImage;
+    int w = 0, h = 0;
+    void *textImg;
+
+    vtable = *(void ***)thisPtr;
+    setAlign = (SetIntFn)vtable[OFF_BUTTON_SETCONTENTALIGNMENT_VT / sizeof(void *)];
+    setInset = (SetTextInsetFn)vtable[OFF_BUTTON_SETTEXTINSET_VT / sizeof(void *)];
+    setImage = (SetImageAtIndexFn)vtable[OFF_LABEL_SETIMAGEATINDEX_VT / sizeof(void *)];
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 80) {
+        DrawToggleSwitch(thisPtr);
+        return;
+    }
+    if (setImage != NULL) {
+        /* Index 0 is the check bitmap. Index 1 is the label — do not clear it. */
+        setImage(thisPtr, 0, NULL, 0);
+    }
+    if (setInset != NULL) {
+        setInset(thisPtr, 0, 0);
+    }
+    if (setAlign != NULL) {
+        setAlign(thisPtr, LABEL_ALIGN_WEST);
+    }
+    ForceWhiteOnTransparent(thisPtr);
+    SetFgColorWhite(thisPtr);
+    if (!IsBadReadPtr((char *)thisPtr + OFF_LABEL_TEXTIMAGE, sizeof(void *))) {
+        textImg = *(void **)((char *)thisPtr + OFF_LABEL_TEXTIMAGE);
+        if (textImg != NULL && g_gameUiBase != NULL && w > 56) {
+            SetDrawWidthFn setDrawWidth =
+                (SetDrawWidthFn)(g_gameUiBase + RVA_TEXTIMAGE_SETDRAWWIDTH);
+            if (IsMouseToggleName(PanelName(thisPtr))) {
+                setDrawWidth(textImg, 150);
+            } else {
+                setDrawWidth(textImg, w - 48);
+            }
+        }
+    }
+    if (g_origButtonPaint != NULL) {
+        g_origButtonPaint(thisPtr);
+    }
+    DrawToggleSwitch(thisPtr);
 }
 
 static void DrawRowChevron(int w, int h)
@@ -1485,6 +1589,10 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
         DrawToggleSwitch(thisPtr);
         return;
     }
+    if (IsCvarToggleRow(thisPtr)) {
+        PaintCvarToggleRow(thisPtr);
+        return;
+    }
     if (IsAdvancedSettingsRow(thisPtr)) {
         void **vtable = *(void ***)thisPtr;
         SetIntFn setAlign = (SetIntFn)vtable[OFF_BUTTON_SETCONTENTALIGNMENT_VT / sizeof(void *)];
@@ -1704,6 +1812,9 @@ static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
     if (IsSettingsToggle(thisPtr)) {
         DrawToggleSwitch(thisPtr);
+        return;
+    }
+    if (IsCvarToggleRow(thisPtr)) {
         return;
     }
     if (IsProgressBar(thisPtr) || IsTitleCloseButton(thisPtr)) {

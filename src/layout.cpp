@@ -408,6 +408,68 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         g_SetSize(keyList, pageW - pad * 2, listH);
         PlaceKeyboardFooterButtons(page, pageW, pageH);
     }
+    if (LayoutFindChild(page, "ReverseMouse") != NULL) {
+        static const char *kChecks[] = {
+            "ReverseMouse", "MouseLook", "MouseFilter", "Joystick",
+            "JoystickLook", "Auto-Aim", "RawInput"
+        };
+        static const char *kDescs[] = {
+            "Reverse Mouse label", "Label1", "Mouse filter", "Joystick label",
+            "Label2", "AutoaimLabel", "RawInputLabel"
+        };
+        const int toggleW = 44;
+        const int titleW = 150;
+        const int descX = pad + titleW + 8;
+        const int rowH = 28;
+        const int rowStep = 33; /* 28px row + 5px gap */
+        int row;
+        int descW = pageW - pad - toggleW - 8 - descX;
+        int y0 = pad + 4;
+        void *slider;
+        void *sens;
+        void *sensTitle;
+        if (descW < 40) {
+            descW = 40;
+        }
+        for (row = 0; row < 7; row++) {
+            void *check = LayoutFindChild(page, kChecks[row]);
+            void *desc = LayoutFindChild(page, kDescs[row]);
+            int y = y0 + row * rowStep;
+            if (check != NULL) {
+                g_SetPos(check, pad, y);
+                g_SetSize(check, pageW - pad * 2, rowH);
+            }
+            if (desc != NULL) {
+                g_SetPos(desc, descX, y + 2);
+                g_SetSize(desc, descW, 24);
+            }
+        }
+        slider = LayoutFindChild(page, "Slider");
+        if (slider != NULL) {
+            int h = 0, w = 0;
+            int y = y0 + 7 * rowStep + 8;
+            g_GetSize(slider, &w, &h);
+            if (h <= 0) {
+                h = 40;
+            }
+            g_SetPos(slider, pad, y + 24);
+            g_SetSize(slider, pageW - pad * 2 - 56, h);
+        }
+        sens = LayoutFindChild(page, "SensitivityLabel");
+        if (sens != NULL) {
+            int w = 0, h = 0;
+            int y = y0 + 7 * rowStep + 8;
+            g_GetSize(sens, &w, &h);
+            if (w < 40) {
+                w = 48;
+            }
+            g_SetPos(sens, pageW - pad - w, y + 28);
+        }
+        sensTitle = LayoutFindChild(page, "Label3");
+        if (sensTitle != NULL) {
+            g_SetPos(sensTitle, pad, y0 + 7 * rowStep + 8);
+        }
+    }
 }
 
 /* COptionsDialog::COptionsDialog (RVA 0x377c0) -- found via RTTI/xref to the
@@ -1380,6 +1442,28 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
             }
             g_SetPos(child, pad, y);
             g_SetSize(child, innerW, h);
+            if (g_GetChildCount != NULL && g_GetChild != NULL) {
+                int ci;
+                int cn = g_GetChildCount(child);
+                if (cn > 0 && cn <= 16) {
+                    for (ci = 0; ci < cn; ci++) {
+                        void *sub = g_GetChild(child, ci);
+                        int sx = 0, sy = 0, sw = 0, sh = 0;
+                        const char *sn;
+                        if (sub == NULL) {
+                            continue;
+                        }
+                        sn = LayoutPanelName(sub);
+                        if (lstrcmpiA(sn, "DescCheckButton") != 0) {
+                            continue;
+                        }
+                        g_GetPos(sub, &sx, &sy);
+                        g_GetSize(sub, &sw, &sh);
+                        g_SetPos(sub, 0, sy);
+                        g_SetSize(sub, innerW, sh);
+                    }
+                }
+            }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         HookLog("PanelListLayout_Hook: exception, leaving stock list layout");

@@ -886,8 +886,8 @@ static void DrawValueSlider(void *thisPtr)
         n0 = n1;
         n1 = tmp;
     }
-    trackH = 18;
-    knob = 22;
+    trackH = 10;
+    knob = 16;
     if (trackH > h - 4) {
         trackH = (h - 4) & ~1;
     }
@@ -904,8 +904,8 @@ static void DrawValueSlider(void *thisPtr)
         knob -= 1;
     }
     padX = knob / 2;
-    if (padX < 10) {
-        padX = 10;
+    if (padX < 8) {
+        padX = 8;
     }
     if (w - padX * 2 < 16) {
         padX = 4;

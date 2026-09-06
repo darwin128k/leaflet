@@ -17,6 +17,12 @@ typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
 typedef void(__thiscall *SetIntFn)(void *self, int value);
 typedef void(__thiscall *SetTextInsetFn)(void *self, int xInset, int yInset);
+typedef void(__thiscall *SetBoolFn)(void *self, unsigned char value);
+typedef void(__thiscall *IImagePaintFn)(void *image);
+typedef void(__thiscall *IImageSetPosFn)(void *image, int x, int y);
+typedef void(__thiscall *IImageGetSizeFn)(void *image, int *outWide, int *outTall);
+typedef void(__thiscall *IImageSetSizeFn)(void *image, int wide, int tall);
+typedef void(__thiscall *ResizeToContentFn)(void *image);
 
 #define RVA_SETPOS                0x000436f0u
 #define RVA_GETPOS                0x00043720u
@@ -28,6 +34,7 @@ typedef void(__thiscall *SetTextInsetFn)(void *self, int xInset, int yInset);
 #define RVA_BUTTON_PAINT          0x0003fa30u /* vgui2::Button::Paint (also PageTab/ToggleButton) */
 #define RVA_BUTTON_VTABLE         0x0009caccu /* vgui2::Button vtable; Label/CheckButton/PageTab differ */
 #define RVA_FRAMEBUTTON_VTABLE    0x0009dd24u /* vgui2::FrameButton — caption close/min/max, not Button vt */
+#define RVA_FRAMESYSTEMBUTTON_VTABLE 0x0009e04cu /* FrameSystemButton (title Steam/menu) */
 #define RVA_LABEL_VTABLE          0x0009cdf4u
 #define RVA_URLLABEL_VTABLE       0x000a023cu
 #define RVA_PAGETAB_VTABLE        0x000a482cu
@@ -46,6 +53,9 @@ typedef void(__thiscall *SetTextInsetFn)(void *self, int xInset, int yInset);
 #define COLOR_FG_WHITE            0xFFF7F5F5u /* r,g,b,a little-endian */
 #define COLOR_BG_TRANSPARENT      0x00000000u
 #define RVA_FRAME_PAINTBACKGROUND 0x0004cb60u /* Frame/PropertyDialog/MessageBox/COptionsDialog */
+#define RVA_FRAME_TITLE_PLACE     0x0004cdb9u /* stock _title SetPos(0x1C,9) .. Paint */
+#define RVA_FRAME_TITLE_CONT      0x0004cde8u /* epilogue after title Paint */
+#define RVA_TEXTIMAGE_RESIZE      0x0004986fu /* TextImage::ResizeImageToContent */
 #define RVA_CAREER_PAINTBACKGROUND 0x00002070u
 #define RVA_PAINTBACKGROUND_18530 0x00018530u
 #define RVA_PAINTBORDER           0x00043d40u
@@ -54,6 +64,15 @@ typedef void(__thiscall *SetTextInsetFn)(void *self, int xInset, int yInset);
 #define RVA_PROGRESSBAR_VTABLE    0x000a1dccu
 #define OFF_PROGRESS              0x78 /* float 0..1; confirmed via fmul [esi+0x78] in PaintBackground */
 
+#define OFF_FRAME_TITLEIMAGE      0xBC /* TextImage* _title, painted in Frame::PaintBackground */
+#define OFF_FRAME_CAPTION_BTNS    0xE8 /* first of five caption Button* (menu/min/max/tray/close) */
+#define FRAME_CAPTION_BTN_COUNT   5
+#define OFF_SETVISIBLE_VT         0x70 /* Panel::SetVisible(bool); IsVisible is 0x78 */
+#define IIMAGE_VT_PAINT           0
+#define IIMAGE_VT_SETPOS          1
+#define IIMAGE_VT_GETCONTENTSIZE  2
+#define IIMAGE_VT_GETSIZE         3
+#define IIMAGE_VT_SETSIZE         4
 #define OFF_PANEL_NAME   0x44
 #define OFF_PANEL_BORDER 0x2C /* IBorder* loaded by Panel::PaintBorder */
 #define SURF_VT_DRAWSETCOLOR       0x1C
@@ -82,6 +101,7 @@ static BYTE g_paint18530Tramp[32];
 static BYTE g_paintBorderTramp[32];
 static BYTE g_framePaintBgAltTramp[32];
 static BYTE g_progressPaintBgTramp[32];
+static BYTE g_titlePlaceTramp[32];
 
 static SurfDrawSetColorFn g_origDrawSetColor = NULL;
 static SurfDrawFilledRectFn g_origDrawFilledRect = NULL;
@@ -113,6 +133,7 @@ static void EnsureSurfaceHooks(void);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb);
+static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
 {
@@ -293,6 +314,192 @@ static int IsTitleCloseButton(void *thisPtr)
         return 1;
     }
     return 0;
+}
+
+static int IsFrameSystemButton(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    if (((unsigned)(size_t)thisPtr & 3u) != 0) {
+        return 0;
+    }
+    if (IsBadReadPtr(thisPtr, sizeof(void *))) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_FRAMESYSTEMBUTTON_VTABLE);
+}
+
+static int FrameHasSysMenuButton(void *frame)
+{
+    int i;
+    if (frame == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    for (i = 0; i < FRAME_CAPTION_BTN_COUNT; i++) {
+        void *btn = *(void **)((char *)frame + OFF_FRAME_CAPTION_BTNS + i * 4);
+        if (IsFrameSystemButton(btn)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void HideFrameSystemButtons(void *frame)
+{
+    int i;
+    if (frame == NULL || g_SetPos == NULL || !FrameHasSysMenuButton(frame)) {
+        return;
+    }
+    for (i = 0; i < FRAME_CAPTION_BTN_COUNT; i++) {
+        void *btn = *(void **)((char *)frame + OFF_FRAME_CAPTION_BTNS + i * 4);
+        if (!IsFrameSystemButton(btn)) {
+            continue;
+        }
+        g_SetPos(btn, -4000, -4000);
+        if (g_SetSize != NULL) {
+            g_SetSize(btn, 1, 1);
+        }
+    }
+}
+
+/* Replaces stock SetPos(28,9)+SetSize(wide-72)+Paint so the caption
+ * is drawn once, centered. GetSize returns the stretched draw box;
+ * GetContentSize / ResizeImageToContent is the glyph width. */
+static void __cdecl PlaceFrameTitle(void *frame)
+{
+    void *title;
+    void **imageVt;
+    IImageGetSizeFn getContent;
+    IImageGetSizeFn getSize;
+    IImageSetPosFn setPos;
+    IImageSetSizeFn setSize;
+    IImagePaintFn paint;
+    ResizeToContentFn resize;
+    int fw = 0, fh = 0, tw = 0, th = 0;
+    int x;
+    int closePad = 22;
+    BYTE *fn;
+
+    if (frame == NULL || g_gameUiBase == NULL || g_GetSize == NULL) {
+        return;
+    }
+    title = *(void **)((char *)frame + OFF_FRAME_TITLEIMAGE);
+    if (title == NULL) {
+        return;
+    }
+    imageVt = *(void ***)title;
+    if (imageVt == NULL) {
+        return;
+    }
+    fn = (BYTE *)imageVt[IIMAGE_VT_PAINT];
+    if (fn == NULL || fn < g_gameUiBase || fn > g_gameUiBase + 0x000B0000u) {
+        return;
+    }
+    if (fn == g_gameUiBase + 0x00002860u) {
+        return;
+    }
+    getContent = (IImageGetSizeFn)imageVt[IIMAGE_VT_GETCONTENTSIZE];
+    getSize = (IImageGetSizeFn)imageVt[IIMAGE_VT_GETSIZE];
+    setPos = (IImageSetPosFn)imageVt[IIMAGE_VT_SETPOS];
+    setSize = (IImageSetSizeFn)imageVt[IIMAGE_VT_SETSIZE];
+    paint = (IImagePaintFn)imageVt[IIMAGE_VT_PAINT];
+    resize = (ResizeToContentFn)(g_gameUiBase + RVA_TEXTIMAGE_RESIZE);
+    if (setPos == NULL || paint == NULL) {
+        return;
+    }
+    g_GetSize(frame, &fw, &fh);
+    __try {
+        resize(title);
+        tw = 0;
+        th = 0;
+        if (getContent != NULL) {
+            getContent(title, &tw, &th);
+        }
+        if ((tw <= 4 || th < 8) && getSize != NULL) {
+            getSize(title, &tw, &th);
+        }
+        if (tw <= 4 || th < 8 || th > 32) {
+            setPos(title, 0x1C, 9);
+            paint(title);
+            return;
+        }
+        if (fw >= 80 && tw > fw - closePad) {
+            tw = fw - closePad;
+        }
+        x = 0x1C;
+        if (fw >= 80) {
+            x = (fw - tw) / 2;
+            if (x < 8) {
+                x = 8;
+            }
+            if (x + tw > fw - closePad) {
+                x = fw - closePad - tw;
+            }
+        }
+        setPos(title, x, 9);
+        if (setSize != NULL) {
+            setSize(title, tw, th);
+        }
+        paint(title);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+}
+
+static void InstallTitlePlaceHook(BYTE *base)
+{
+    BYTE *target = base + RVA_FRAME_TITLE_PLACE;
+    BYTE *cont = base + RVA_FRAME_TITLE_CONT;
+    unsigned stolen = (unsigned)(cont - target);
+    DWORD oldProtect;
+    DWORD trampProtect;
+    INT32 relCall;
+    INT32 relJmp;
+    INT32 relHook;
+    unsigned i;
+    static const BYTE expected[10] = {
+        0x8B, 0x8E, 0xBC, 0x00, 0x00, 0x00, 0x6A, 0x09, 0x6A, 0x1C
+    };
+
+    if (stolen < 16 || stolen > 64) {
+        return;
+    }
+    if (memcmp(target, expected, sizeof(expected)) != 0) {
+        HookLog("RoundFrame: title place mismatch at %p, skip", (void *)target);
+        return;
+    }
+
+    g_titlePlaceTramp[0] = 0x56; /* push esi  (frame) */
+    g_titlePlaceTramp[1] = 0xE8;
+    relCall = (INT32)((BYTE *)PlaceFrameTitle - (g_titlePlaceTramp + 6));
+    memcpy(g_titlePlaceTramp + 2, &relCall, sizeof(relCall));
+    g_titlePlaceTramp[6] = 0x83;
+    g_titlePlaceTramp[7] = 0xC4;
+    g_titlePlaceTramp[8] = 0x04;
+    g_titlePlaceTramp[9] = 0xE9;
+    relJmp = (INT32)(cont - (g_titlePlaceTramp + 14));
+    memcpy(g_titlePlaceTramp + 10, &relJmp, sizeof(relJmp));
+
+    if (!VirtualProtect(g_titlePlaceTramp, sizeof(g_titlePlaceTramp),
+                        PAGE_EXECUTE_READWRITE, &trampProtect)) {
+        return;
+    }
+    if (!VirtualProtect(target, stolen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return;
+    }
+    relHook = (INT32)(g_titlePlaceTramp - (target + 5));
+    target[0] = 0xE9;
+    memcpy(target + 1, &relHook, sizeof(relHook));
+    for (i = 5; i < stolen; i++) {
+        target[i] = 0x90;
+    }
+    VirtualProtect(target, stolen, oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, stolen);
+    FlushInstructionCache(GetCurrentProcess(), g_titlePlaceTramp, sizeof(g_titlePlaceTramp));
+    HookLog("RoundFrame: title place hooked %p", (void *)target);
 }
 
 static int VtableFlag(void *thisPtr, unsigned vtOff)
@@ -862,14 +1069,16 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
                 unsigned int fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
                                                           : ThemeRgbPacked(g_theme.trackRgb);
                 DrawRoundedFillAt(px, py, w, h, 8, fill, 1, 1);
-            } else if (g_edgeCaptured) {
-                /* Orig already drew the rounded body and then the Frame
-                 * title. Refilling the interior here ate "Op" / "Q" after
-                 * disconnect, when ClientScheme made the body fill match
-                 * the panel and g_edgeCaptured flipped on. Stroke only. */
-                DrawRoundedStrokeAt(g_edgeX, g_edgeY, w, h, g_roundR,
-                                    ThemeStrokePacked(), ThemeStrokeThickness(),
-                                    g_edgeRoundTop, g_edgeRoundBottom);
+            } else {
+                if (g_edgeCaptured) {
+                    /* Orig already drew the rounded body and then the Frame
+                     * title. Refilling the interior here ate "Op" / "Q" after
+                     * disconnect, when ClientScheme made the body fill match
+                     * the panel and g_edgeCaptured flipped on. Stroke only. */
+                    DrawRoundedStrokeAt(g_edgeX, g_edgeY, w, h, g_roundR,
+                                        ThemeStrokePacked(), ThemeStrokeThickness(),
+                                        g_edgeRoundTop, g_edgeRoundBottom);
+                }
             }
             return;
         }
@@ -1058,6 +1267,9 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
         PaintMacCloseDot(thisPtr);
         return;
     }
+    if (IsFrameSystemButton(thisPtr)) {
+        return;
+    }
 
     roundBtn = ShouldRoundButton(thisPtr);
     tab = IsPageTab(thisPtr);
@@ -1102,6 +1314,7 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
 
 static void __fastcall FramePaintBg_Hook(void *thisPtr)
 {
+    HideFrameSystemButtons(thisPtr);
     RunRoundedBackground(thisPtr, g_origFramePaintBg);
 }
 
@@ -1242,6 +1455,7 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
     InstallNearHook(base + RVA_FRAME_PAINTBACKGROUND, 6, kFrameBgPrologue,
                     g_framePaintBgTramp, sizeof(g_framePaintBgTramp),
                     (void *)FramePaintBg_Hook, &g_origFramePaintBg, "FramePaintBackground");
+    InstallTitlePlaceHook(base);
     InstallNearHook(base + RVA_PANEL_PAINTBACKGROUND, 8, kPanelBgPrologue,
                     g_panelPaintBgTramp, sizeof(g_panelPaintBgTramp),
                     (void *)PanelPaintBg_Hook, &g_origPanelPaintBg, "PanelPaintBackground");

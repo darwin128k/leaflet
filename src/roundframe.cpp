@@ -12,6 +12,7 @@ typedef void(__thiscall *PaintFn)(void *self);
 typedef void *(__cdecl *GetSurfaceFn)(void);
 typedef void(__thiscall *SurfDrawSetColorFn)(void *surf, unsigned int packedRgba);
 typedef void(__thiscall *SurfDrawFilledRectFn)(void *surf, int x0, int y0, int x1, int y1);
+typedef void(__thiscall *SurfGetScreenSizeFn)(void *surf, int *outWide, int *outTall);
 typedef char(__thiscall *ByteGetterFn)(void *self);
 typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
@@ -65,6 +66,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_FRAME_PAINTBG_ALT     0x00023970u
 #define RVA_PROGRESSBAR_PAINTBG   0x000696b0u /* vgui2::ProgressBar::PaintBackground — cube segments */
 #define RVA_PROGRESSBAR_VTABLE    0x000a1dccu
+#define RVA_CROSSHAIRIMAGE_PAINT  0x0003b010u /* CrosshairImagePanel::Paint — engine FillRGBA, no VGUI clip */
 #define OFF_PROGRESS              0x78 /* float 0..1; confirmed via fmul [esi+0x78] in PaintBackground */
 
 #define OFF_FRAME_TITLEIMAGE      0xBC /* TextImage* _title, painted in Frame::PaintBackground */
@@ -80,6 +82,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define OFF_PANEL_BORDER 0x2C /* IBorder* loaded by Panel::PaintBorder */
 #define SURF_VT_DRAWSETCOLOR       0x1C
 #define SURF_VT_DRAWFILLEDRECT     0x24
+#define SURF_VT_GETSCREENSIZE      0x80 /* ISurface::GetScreenSize(int&,int&) — CrosshairImagePanel::UpdateCrosshair */
 
 static BYTE *g_gameUiBase = NULL;
 static SetPosFn g_SetPos = NULL;
@@ -96,6 +99,7 @@ static PaintFn g_origPaint18530 = NULL;
 static PaintFn g_origPaintBorder = NULL;
 static PaintFn g_origFramePaintBgAlt = NULL;
 static PaintFn g_origProgressPaintBg = NULL;
+static PaintFn g_origCrosshairPaint = NULL;
 static BYTE g_panelPaintBgTramp[32];
 static BYTE g_buttonPaintTramp[32];
 static BYTE g_framePaintBgTramp[32];
@@ -104,6 +108,7 @@ static BYTE g_paint18530Tramp[32];
 static BYTE g_paintBorderTramp[32];
 static BYTE g_framePaintBgAltTramp[32];
 static BYTE g_progressPaintBgTramp[32];
+static BYTE g_crosshairPaintTramp[32];
 static BYTE g_titlePlaceTramp[32];
 
 static SurfDrawSetColorFn g_origDrawSetColor = NULL;
@@ -1634,6 +1639,72 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
     }
 }
 
+#define OFF_CROSSHAIR_BAR 0x94
+#define OFF_CROSSHAIR_GAP 0x98
+
+static void __fastcall CrosshairPaint_Hook(void *thisPtr)
+{
+    int w = 0, h = 0;
+    int *bar;
+    int *gap;
+    int oldBar;
+    int oldGap;
+    int maxR;
+    int largeNeed;
+    int sw = 0;
+    int sh = 0;
+
+    if (g_origCrosshairPaint == NULL) {
+        return;
+    }
+    if (thisPtr == NULL || g_GetSize == NULL) {
+        g_origCrosshairPaint(thisPtr);
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    bar = (int *)((char *)thisPtr + OFF_CROSSHAIR_BAR);
+    gap = (int *)((char *)thisPtr + OFF_CROSSHAIR_GAP);
+    oldBar = *bar;
+    oldGap = *gap;
+    maxR = ((w < h) ? w : h) / 2 - 2;
+    if (maxR < 4) {
+        maxR = 4;
+    }
+    /* Stock Large is (9+5)*screenWide/640. Clamping each size to maxR
+     * separately made Medium and Large identical on 4:3. Scale everything
+     * by the same factor so Small < Medium < Large still reads. */
+    largeNeed = oldBar + oldGap;
+    if (g_GetSurface != NULL) {
+        void *surf = g_GetSurface();
+        if (surf != NULL) {
+            void **vt = *(void ***)surf;
+            SurfGetScreenSizeFn getScreen = (SurfGetScreenSizeFn)vt[SURF_VT_GETSCREENSIZE / sizeof(void *)];
+            if (getScreen != NULL) {
+                getScreen(surf, &sw, &sh);
+            }
+        }
+    }
+    if (sw > 0) {
+        largeNeed = (14 * sw) / 640;
+        if (largeNeed < oldBar + oldGap) {
+            largeNeed = oldBar + oldGap;
+        }
+    }
+    if (largeNeed > maxR && largeNeed > 0) {
+        *bar = oldBar * maxR / largeNeed;
+        *gap = oldGap * maxR / largeNeed;
+        if (*bar < 1) {
+            *bar = 1;
+        }
+        if (*gap < 0) {
+            *gap = 0;
+        }
+    }
+    g_origCrosshairPaint(thisPtr);
+    *bar = oldBar;
+    *gap = oldGap;
+}
+
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
     if (IsSettingsToggle(thisPtr)) {
@@ -1717,6 +1788,12 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
         InstallNearHook(base + RVA_PROGRESSBAR_PAINTBG, 6, kProgressBgPrologue,
                         g_progressPaintBgTramp, sizeof(g_progressPaintBgTramp),
                         (void *)ProgressPaintBg_Hook, &g_origProgressPaintBg, "ProgressBarPaintBackground");
+    }
+    {
+        static const BYTE kXhPaintPrologue[6] = { 0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1 };
+        InstallNearHook(base + RVA_CROSSHAIRIMAGE_PAINT, 6, kXhPaintPrologue,
+                        g_crosshairPaintTramp, sizeof(g_crosshairPaintTramp),
+                        (void *)CrosshairPaint_Hook, &g_origCrosshairPaint, "CrosshairImagePaint");
     }
 
     /* Default/OK buttons and tabs draw a dotted inset rect on focus.

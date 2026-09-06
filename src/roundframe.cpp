@@ -362,7 +362,33 @@ static int NameIsOptionsTab(const char *name)
     return 0;
 }
 
+static int NameContainsI(const char *hay, const char *needle);
 static int NameIsMenuChrome(const char *name);
+
+static int IsOptionsInnerChrome(void *thisPtr)
+{
+    const char *name;
+    int w = 0;
+    int h = 0;
+    if (thisPtr == NULL) {
+        return 0;
+    }
+    name = PanelName(thisPtr);
+    if (lstrcmpiA(name, "Sheet") == 0 || NameContainsI(name, "listpanel")) {
+        return 1;
+    }
+    if (NameContainsI(name, "OptionsSub") || NameContainsI(name, "MultiplayerAdvanced")) {
+        return 1;
+    }
+    /* Some pages are named like the tab ("Voice"), not OptionsSubVoice. */
+    if (g_GetSize != NULL && NameIsOptionsTab(name)) {
+        g_GetSize(thisPtr, &w, &h);
+        if (h >= 100) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static int IsVguiButton(void *thisPtr)
 {
@@ -1227,6 +1253,17 @@ static int ShouldRoundPanel(void *thisPtr)
     if (lstrcmpiA(name, "Sheet") == 0 || NameContainsI(name, "listpanel")) {
         return 0;
     }
+    if (IsOptionsInnerChrome(thisPtr)) {
+        return 0;
+    }
+    /* Nested settings pages are Panels, not Frames. Rounding them draws
+     * the inner Voice/Mouse frame. Only named dialogs stay rounded. */
+    if (!NameContainsI(name, "Dialog") && !NameContainsI(name, "MessageBox")
+        && !NameContainsI(name, "QueryBox") && lstrcmpiA(name, "BaseQuestionPanel") != 0) {
+        if (w >= 160 && h >= 100) {
+            return 0;
+        }
+    }
     if (NameContainsI(name, "MOTD") || NameContainsI(name, "TeamMenu")
         || NameContainsI(name, "ClassMenu") || NameContainsI(name, "MapInfo")
         || lstrcmpiA(name, "Message") == 0
@@ -1490,21 +1527,24 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
             roundTop = 1;
             roundBottom = 1;
         }
-            /* This is the panel's own full body, not some smaller inner
-             * sheet -- remember where it landed on screen so the caller
-             * can trace a stroke around the same rounded rect once we're
-             * back out of the engine's PaintBackground call. */
-            if (g_roundW > 0 && g_roundH > 0 &&
-                rw >= g_roundW - 4 && rh >= g_roundH - 4) {
-                g_edgeCaptured = 1;
-                g_edgeX = x0;
-                g_edgeY = y0;
-                g_edgeRoundTop = roundTop;
-                g_edgeRoundBottom = roundBottom;
-                g_edgeBodyColor = g_curColor;
-            }
+        if (g_roundW > 0 && g_roundH > 0 &&
+            rw >= g_roundW - 4 && rh >= g_roundH - 4) {
+            g_edgeCaptured = 1;
+            g_edgeX = x0;
+            g_edgeY = y0;
+            g_edgeRoundTop = roundTop;
+            g_edgeRoundBottom = roundBottom;
+            g_edgeBodyColor = g_curColor;
             DrawRoundedFillAt(x0, y0, rw, rh, r, g_curColor, roundTop, roundBottom);
             return;
+        }
+        /* Inset client/sheet fill inside the dialog — the extra rounded
+         * box on Voice/Mouse/etc. Drop it; Advanced already hid it. */
+        if (!g_roundIsButton) {
+            return;
+        }
+        DrawRoundedFillAt(x0, y0, rw, rh, r, g_curColor, roundTop, roundBottom);
+        return;
     }
     /* Title bar / status strip sitting on the window edge. */
     if (rw >= 80 && rh >= 14 && rh < 48) {
@@ -1657,6 +1697,9 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
     if (IsStaticTextPanel(thisPtr)) {
         return;
     }
+    if (IsOptionsInnerChrome(thisPtr)) {
+        return;
+    }
     /* 0x43d60 is shared by lots of controls. Only round inner sheets
      * that actually fill a dialog; never the 64px logo strip. */
     if (g_GetSize != NULL && thisPtr != NULL) {
@@ -1674,6 +1717,17 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
         if (ShouldRoundPanel(thisPtr)) {
             RunRoundedBackground(thisPtr, g_origPanelPaintBg);
             return;
+        }
+        if (w >= 160 && h >= 100) {
+            const char *nm = PanelName(thisPtr);
+            int gameW = 0, gameH = 0;
+            GameClientSize(&gameW, &gameH);
+            if (!(gameW > 0 && w >= gameW - 8)
+                && !NameContainsI(nm, "Dialog")
+                && !NameContainsI(nm, "MessageBox")
+                && !NameIsMenuChrome(nm)) {
+                return;
+            }
         }
     }
     if (g_origPanelPaintBg != NULL) {
@@ -2024,6 +2078,16 @@ static void __fastcall PaintBorder_Hook(void *thisPtr)
     }
     if (IsCvarToggleRow(thisPtr)) {
         return;
+    }
+    if (IsOptionsInnerChrome(thisPtr)) {
+        return;
+    }
+    if (g_GetSize != NULL && thisPtr != NULL && !ShouldRoundButton(thisPtr)) {
+        int bw = 0, bh = 0;
+        g_GetSize(thisPtr, &bw, &bh);
+        if (bw >= 160 && bh >= 100 && !ShouldRoundPanel(thisPtr)) {
+            return;
+        }
     }
     if (IsProgressBar(thisPtr) || IsOptionsSlider(thisPtr) || IsTitleCloseButton(thisPtr)) {
         return;

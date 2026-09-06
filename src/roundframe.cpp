@@ -23,6 +23,7 @@ typedef void(__thiscall *IImageSetPosFn)(void *image, int x, int y);
 typedef void(__thiscall *IImageGetSizeFn)(void *image, int *outWide, int *outTall);
 typedef void(__thiscall *IImageSetSizeFn)(void *image, int wide, int tall);
 typedef void(__thiscall *ResizeToContentFn)(void *image);
+typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 
 #define RVA_SETPOS                0x000436f0u
 #define RVA_GETPOS                0x00043720u
@@ -56,6 +57,7 @@ typedef void(__thiscall *ResizeToContentFn)(void *image);
 #define RVA_FRAME_TITLE_PLACE     0x0004cdb9u /* stock _title SetPos(0x1C,9) .. Paint */
 #define RVA_FRAME_TITLE_CONT      0x0004cde8u /* epilogue after title Paint */
 #define RVA_TEXTIMAGE_RESIZE      0x0004986fu /* TextImage::ResizeImageToContent */
+#define RVA_TEXTIMAGE_SETDRAWWIDTH 0x00049c64u /* TextImage::SetDrawWidth */
 #define RVA_CAREER_PAINTBACKGROUND 0x00002070u
 #define RVA_PAINTBACKGROUND_18530 0x00018530u
 #define RVA_PAINTBORDER           0x00043d40u
@@ -378,6 +380,7 @@ static void __cdecl PlaceFrameTitle(void *frame)
     IImageSetSizeFn setSize;
     IImagePaintFn paint;
     ResizeToContentFn resize;
+    SetDrawWidthFn setDrawWidth;
     int fw = 0, fh = 0, tw = 0, th = 0;
     int x;
     int closePad = 22;
@@ -407,27 +410,40 @@ static void __cdecl PlaceFrameTitle(void *frame)
     setSize = (IImageSetSizeFn)imageVt[IIMAGE_VT_SETSIZE];
     paint = (IImagePaintFn)imageVt[IIMAGE_VT_PAINT];
     resize = (ResizeToContentFn)(g_gameUiBase + RVA_TEXTIMAGE_RESIZE);
+    setDrawWidth = (SetDrawWidthFn)(g_gameUiBase + RVA_TEXTIMAGE_SETDRAWWIDTH);
     if (setPos == NULL || paint == NULL) {
         return;
     }
     g_GetSize(frame, &fw, &fh);
     __try {
+        /* PropertyDialog titles wrap to (frame-72), so GetContentSize is the
+         * layout box and the glyphs stay left. Captions are one line. */
+        *((unsigned char *)title + 0x34) &= (unsigned char)~1u;
+        setDrawWidth(title, 0);
         resize(title);
         tw = 0;
         th = 0;
         if (getContent != NULL) {
             getContent(title, &tw, &th);
         }
-        if ((tw <= 4 || th < 8) && getSize != NULL) {
-            getSize(title, &tw, &th);
+        if ((tw <= 4 || th < 8 || (fw >= 80 && tw > fw / 3)) && getSize != NULL) {
+            int sw = 0, sh = 0;
+            getSize(title, &sw, &sh);
+            if (tw <= 4 || (sw > 0 && sw < tw)) {
+                tw = sw;
+                th = sh;
+            }
         }
         if (tw <= 4 || th < 8 || th > 32) {
             setPos(title, 0x1C, 9);
             paint(title);
             return;
         }
-        if (fw >= 80 && tw > fw - closePad) {
-            tw = fw - closePad;
+        if (fw >= 80 && tw > fw / 3) {
+            /* Still a stretched box: keep left-aligned stock pos. */
+            setPos(title, 0x1C, 9);
+            paint(title);
+            return;
         }
         x = 0x1C;
         if (fw >= 80) {

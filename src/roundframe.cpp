@@ -78,6 +78,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_SLIDER_RECOMPUTENOB   0x00066a80u /* Slider::RecomputeNobPosFromValue */
 #define OFF_SLIDER_NOB0           0x74
 #define OFF_SLIDER_NOB1           0x78
+#define OFF_SLIDER_DRAGGING       0x71
 #define OFF_SLIDER_MIN            0x8C
 #define OFF_SLIDER_MAX            0x90
 #define OFF_SLIDER_VALUE          0x94
@@ -144,6 +145,9 @@ static int g_roundIsButton = 0;
 static int g_roundHot = 0;
 static unsigned int g_curColor = 0xE0101410u;
 static OverlayTheme g_theme;
+static void *g_dragValueLabel = NULL;
+static int g_dragValueRestX = 0;
+static int g_dragValueRestY = 0;
 
 /* Captured from the main-body fill inside DrawFilledRect_Hook so
  * RunRoundedBackground can trace a stroke around the exact same rounded
@@ -856,7 +860,6 @@ static void DrawValueSlider(void *thisPtr)
     int padX;
     int trackY;
     int cx;
-    int fillW;
     int row;
     int knobX;
     int knobY;
@@ -883,36 +886,43 @@ static void DrawValueSlider(void *thisPtr)
         n0 = n1;
         n1 = tmp;
     }
-    trackH = 10;
-    knob = 16;
+    trackH = 18;
+    knob = 22;
     if (trackH > h - 4) {
         trackH = (h - 4) & ~1;
     }
-    if (trackH < 6) {
-        trackH = h < 8 ? (h & ~1) : 6;
+    if (trackH < 8) {
+        trackH = h < 10 ? (h & ~1) : 8;
     }
-    if (knob > h) {
+    if (knob > h - 2) {
         knob = h - 2;
-        if (knob < 10) {
+        if (knob < trackH) {
             knob = trackH;
         }
     }
+    if ((knob & 1) != 0) {
+        knob -= 1;
+    }
     padX = knob / 2;
-    if (padX < 8) {
-        padX = 8;
+    if (padX < 10) {
+        padX = 10;
     }
     if (w - padX * 2 < 16) {
         padX = 4;
     }
-    trackY = 8 + (4 - trackH) / 2;
-    if (h < 28) {
+    if (h >= 44) {
+        trackY = 8;
+    } else {
         trackY = (h - trackH) / 2;
     }
     if (trackY < 0) {
         trackY = 0;
     }
-    if (trackY + trackH > h) {
-        trackY = h - trackH;
+    if (trackY + ((knob > trackH) ? knob : trackH) > h) {
+        trackY = h - ((knob > trackH) ? knob : trackH);
+        if (trackY < 0) {
+            trackY = 0;
+        }
     }
     cx = (n0 + n1) / 2;
     if (cx < padX || cx > w - padX || (n0 == 0 && n1 == 0)) {
@@ -935,19 +945,13 @@ static void DrawValueSlider(void *thisPtr)
         cx = w - padX;
     }
     DrawPillAt(padX, trackY, w - padX * 2, trackH, g_theme.trackRgb);
-    fillW = cx - padX + trackH / 2;
-    if (fillW < trackH) {
-        fillW = (cx > padX) ? (cx - padX) : 0;
-    }
-    if (fillW > w - padX * 2) {
-        fillW = w - padX * 2;
-    }
-    if (fillW > 0) {
+    /* Straight right edge under the knob so the disk covers the join. */
+    if (cx > padX) {
         for (row = 0; row < trackH; row++) {
             int inset = PillInset(row, trackH);
             int xL = padX + inset;
+            int xFillR = cx;
             int xTrackR = w - padX - inset;
-            int xFillR = padX + fillW - inset;
             if (xFillR > xTrackR) {
                 xFillR = xTrackR;
             }
@@ -966,6 +970,43 @@ static void DrawValueSlider(void *thisPtr)
         knobY = 0;
     }
     DrawAaDisk(knobX, knobY, knob, 0xF5F5F7u, g_theme.windowRgb);
+    if (g_dragValueLabel != NULL && g_SetPos != NULL && g_GetPos != NULL
+        && lstrcmpiA(PanelName(thisPtr), "Slider") == 0) {
+        unsigned char dragging = *(unsigned char *)((char *)thisPtr + OFF_SLIDER_DRAGGING);
+        if (dragging) {
+            int sx = 0;
+            int sy = 0;
+            int dummyW = 0;
+            int lh = 0;
+            int px;
+            int py;
+            g_GetPos(thisPtr, &sx, &sy);
+            g_GetSize(g_dragValueLabel, &dummyW, &lh);
+            if (lh <= 0) {
+                lh = 20;
+            }
+            if (g_SetSize != NULL) {
+                g_SetSize(g_dragValueLabel, 32, lh);
+            }
+            /* TextEntry is west-aligned with a few px inset, so lw/2
+             * parks the glyphs left of the knob. */
+            px = sx + cx - 16;
+            py = sy + trackY + trackH + 4;
+            if (px < 0) {
+                px = 0;
+            }
+            g_SetPos(g_dragValueLabel, px, py);
+        } else {
+            g_SetPos(g_dragValueLabel, g_dragValueRestX, g_dragValueRestY);
+        }
+    }
+}
+
+void RoundFrame_SetDragValueLabel(void *label, int restX, int restY)
+{
+    g_dragValueLabel = label;
+    g_dragValueRestX = restX;
+    g_dragValueRestY = restY;
 }
 
 static void PaintCvarToggleRow(void *thisPtr)

@@ -8,5 +8,6 @@
  * the same code fits a tiny query box and a wide browser. Must run after
  * GameUI.dll is mapped. */
 void RoundFrame_Init(HMODULE hOriginalGameUI);
+void RoundFrame_SetDragValueLabel(void *label, int restX, int restY);
 
 #endif

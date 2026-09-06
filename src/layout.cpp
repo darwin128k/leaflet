@@ -580,17 +580,12 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
                 h = 40;
             }
             g_SetPos(slider, pad, y + 24);
-            g_SetSize(slider, pageW - pad * 2 - 56, h);
+            g_SetSize(slider, pageW - pad * 2, h);
         }
         sens = LayoutFindChild(page, "SensitivityLabel");
         if (sens != NULL) {
-            int w = 0, h = 0;
-            int y = y0 + 7 * rowStep + 8;
-            g_GetSize(sens, &w, &h);
-            if (w < 40) {
-                w = 48;
-            }
-            g_SetPos(sens, pageW - pad - w, y + 28);
+            g_SetPos(sens, -1000, -1000);
+            RoundFrame_SetDragValueLabel(sens, -1000, -1000);
         }
         sensTitle = LayoutFindChild(page, "Label3");
         if (sensTitle != NULL) {

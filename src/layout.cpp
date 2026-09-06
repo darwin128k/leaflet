@@ -267,17 +267,38 @@ static int ItemIsVisible(void *item)
     return result;
 }
 
-static void GetItemContentSize(void *item, int *outWide, int *outTall)
+static void GetItemContentSizeQuiet(void *item, int *outWide, int *outTall)
 {
     *outWide = 0;
     *outTall = 0;
     if (item == NULL) {
         return;
     }
-    void **vtable = *(void ***)item;
-    GetContentSizeFn fn = (GetContentSizeFn)vtable[ITEM_VTABLE_GETCONTENTSIZE_OFFSET / sizeof(void *)];
-    fn(item, outWide, outTall);
+    {
+        void **vtable = *(void ***)item;
+        GetContentSizeFn fn = (GetContentSizeFn)vtable[ITEM_VTABLE_GETCONTENTSIZE_OFFSET / sizeof(void *)];
+        fn(item, outWide, outTall);
+    }
+}
+
+static void GetItemContentSize(void *item, int *outWide, int *outTall)
+{
+    GetItemContentSizeQuiet(item, outWide, outTall);
     HookLog("  GetItemContentSize: item=%p wide=%d tall=%d", item, *outWide, *outTall);
+}
+
+/* GameMenu.res spacer rows are an empty label+command. Stock still marks
+ * them visible in-game, which used to draw a blank plate between Player
+ * list and New Game. Skip anything with no text (and no icon yet). */
+static int ItemIsBlankRow(void *item)
+{
+    int cw = 0;
+    int ct = 0;
+    if (item == NULL) {
+        return 1;
+    }
+    GetItemContentSizeQuiet(item, &cw, &ct);
+    return cw < 8;
 }
 
 static void AttachIcon(void *item, const char *iconPath)
@@ -427,7 +448,7 @@ static int CollectVisibleItems(void *thisPtr, void **outItems, int maxItems)
             continue;
         }
         item = *(void **)(itemSlotBase + slotIndex * ITEM_SLOT_STRIDE);
-        if (item == NULL || !ItemIsVisibleQuiet(item)) {
+        if (item == NULL || !ItemIsVisibleQuiet(item) || ItemIsBlankRow(item)) {
             continue;
         }
         outItems[visibleCount++] = item;
@@ -1114,11 +1135,17 @@ static void LayoutHook_Inner(void *thisPtr)
     const int minRowHeight = 36; /* icon art is 32x32 -- never go below that plus a little headroom */
     int v;
 
-    /* Only the main menu (4 visible items, in GameMenu.res order: New Game,
-     * Find Servers, Options, Quit) gets real per-item icons -- other menu
-     * variants (e.g. the 3-item in-game pause menu) would mismatch this
-     * list, so they just don't get icons attached. */
-    static const char *kMainMenuIcons[4] = {
+    /* Main menu icons follow labeled GameMenu.res rows (empty spacer skipped). */
+    static const char *kOutOfGameIcons[4] = {
+        "gfx/vgui/icon_newgame",
+        "gfx/vgui/icon_find",
+        "gfx/vgui/icon_options",
+        "gfx/vgui/icon_quit",
+    };
+    static const char *kInGameIcons[7] = {
+        "gfx/vgui/icon_resume",
+        "gfx/vgui/icon_disconnect",
+        "gfx/vgui/icon_players",
         "gfx/vgui/icon_newgame",
         "gfx/vgui/icon_find",
         "gfx/vgui/icon_options",
@@ -1127,13 +1154,32 @@ static void LayoutHook_Inner(void *thisPtr)
 
     HookLog("LayoutHook_ReplacementEntry: visibleCount=%d (vertical list mode)", visibleCount);
 
-    /* Attach icons FIRST -- they add to each item's own image list, which
-     * its content-size measurement below has to see, or the measurement
-     * would be taken before the icon exists. */
-    if (visibleCount == 4) {
+    {
+        int labeledCount = 0;
+        const char **icons = NULL;
+        int iconCount = 0;
+        int iconSlot = 0;
         for (v = 0; v < visibleCount; v++) {
-            HookLog("LayoutHook_ReplacementEntry: v=%d attaching icon %s", v, kMainMenuIcons[v]);
-            AttachIcon(visibleItems[v], kMainMenuIcons[v]);
+            if (!ItemIsBlankRow(visibleItems[v])) {
+                labeledCount++;
+            }
+        }
+        if (labeledCount == 4) {
+            icons = kOutOfGameIcons;
+            iconCount = 4;
+        } else if (labeledCount == 7) {
+            icons = kInGameIcons;
+            iconCount = 7;
+        }
+        for (v = 0; v < visibleCount; v++) {
+            if (ItemIsBlankRow(visibleItems[v])) {
+                continue;
+            }
+            if (iconSlot < iconCount) {
+                HookLog("LayoutHook_ReplacementEntry: v=%d attaching icon %s", v, icons[iconSlot]);
+                AttachIcon(visibleItems[v], icons[iconSlot]);
+                iconSlot++;
+            }
         }
     }
 
@@ -1153,6 +1199,9 @@ static void LayoutHook_Inner(void *thisPtr)
     int maxContentTall = 0;
     for (v = 0; v < visibleCount; v++) {
         int cw = 0, ct = 0;
+        if (ItemIsBlankRow(visibleItems[v])) {
+            continue;
+        }
         GetItemContentSize(visibleItems[v], &cw, &ct);
         HookLog("LayoutHook_ReplacementEntry: v=%d contentWide=%d contentTall=%d", v, cw, ct);
         if (cw > maxContentWide) maxContentWide = cw;
@@ -1176,6 +1225,20 @@ static void LayoutHook_Inner(void *thisPtr)
     int y = startY;
     for (v = 0; v < visibleCount; v++) {
         int x = marginX;
+        int blank = ItemIsBlankRow(visibleItems[v]);
+
+        if (blank) {
+            /* Keep the row of air between in-game and always-on items,
+             * but park the empty panel off-screen so stock/our plates
+             * never paint a substrate in the gap. */
+            HookLog("LayoutHook_ReplacementEntry: v=%d spacer, skipping plate", v);
+            g_SetPos(visibleItems[v], -4000, y);
+            if (g_SetSize != NULL) {
+                g_SetSize(visibleItems[v], 1, 1);
+            }
+            y += rowHeight + rowSpacing;
+            continue;
+        }
 
         HookLog("LayoutHook_ReplacementEntry: v=%d x=%d y=%d, calling SetPos", v, x, y);
         g_SetPos(visibleItems[v], x, y);

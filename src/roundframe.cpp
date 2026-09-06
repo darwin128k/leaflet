@@ -15,6 +15,8 @@ typedef void(__thiscall *SurfDrawFilledRectFn)(void *surf, int x0, int y0, int x
 typedef char(__thiscall *ByteGetterFn)(void *self);
 typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
+typedef void(__thiscall *SetIntFn)(void *self, int value);
+typedef void(__thiscall *SetTextInsetFn)(void *self, int xInset, int yInset);
 
 #define RVA_SETPOS                0x000436f0u
 #define RVA_GETPOS                0x00043720u
@@ -35,6 +37,9 @@ typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsi
 #define OFF_BUTTON_SETDEFAULTCOLOR_VT 0x2ec
 #define OFF_BUTTON_SETARMEDCOLOR_VT   0x2f0
 #define OFF_BUTTON_SETSELECTEDCOLOR_VT 0x2f4
+#define OFF_BUTTON_SETCONTENTALIGNMENT_VT 0x22c /* Label::SetContentAlignment, same fn as MenuItem */
+#define OFF_BUTTON_SETTEXTINSET_VT        0x230 /* Label::SetTextInset(x,y) — leftover 6px west inset from scheme */
+#define LABEL_ALIGN_CENTER 4 /* a_northwest=0 ... a_west=3, a_center=4 */
 #define OFF_SETFGCOLOR_VT         0xD0 /* Button/Label::SetFgColor — also updates TextImage */
 #define OFF_PAGETAB_ACTIVE        0x108
 #define OFF_PAGETAB_ACTIVE_FG     0x109
@@ -407,6 +412,23 @@ static int ShouldRoundButton(void *thisPtr)
         return 0;
     }
     return 1;
+}
+
+static void CenterRoundedButtonText(void *thisPtr)
+{
+    void **vtable;
+    SetIntFn setAlign;
+    SetTextInsetFn setInset;
+    if (thisPtr == NULL) {
+        return;
+    }
+    vtable = *(void ***)thisPtr;
+    setAlign = (SetIntFn)vtable[OFF_BUTTON_SETCONTENTALIGNMENT_VT / sizeof(void *)];
+    setInset = (SetTextInsetFn)vtable[OFF_BUTTON_SETTEXTINSET_VT / sizeof(void *)];
+    /* Scheme/ApplySchemeSettings leaves TextInset=6 even after a_center.
+     * GoldSrc Label still adds that to x, so OK/Cancel look left of the plate. */
+    setInset(thisPtr, 0, 0);
+    setAlign(thisPtr, LABEL_ALIGN_CENTER);
 }
 
 static int NameContainsI(const char *hay, const char *needle)
@@ -1044,8 +1066,11 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
     if (roundBtn) {
         ForceWhiteOnTransparent(thisPtr);
         SetFgColorWhite(thisPtr);
+        CenterRoundedButtonText(thisPtr);
         PaintControlPlate(thisPtr);
-    } else if (tabHot) {
+    } else if (tab) {
+        CenterRoundedButtonText(thisPtr);
+        if (tabHot) {
         unsigned char *fg = (unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE_FG;
         /* Selected colour at +0x109, idle/hover colour at +0x10D. */
         fg[0] = 245;
@@ -1059,6 +1084,7 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
         ForceWhiteOnTransparent(thisPtr);
         SetFgColorWhite(thisPtr);
         PaintControlPlate(thisPtr);
+        }
     }
     if (g_origButtonPaint != NULL) {
         g_origButtonPaint(thisPtr);

@@ -48,6 +48,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define OFF_BUTTON_SETCONTENTALIGNMENT_VT 0x22c /* Label::SetContentAlignment, same fn as MenuItem */
 #define OFF_BUTTON_SETTEXTINSET_VT        0x230 /* Label::SetTextInset(x,y) — leftover 6px west inset from scheme */
 #define LABEL_ALIGN_CENTER 4 /* a_northwest=0 ... a_west=3, a_center=4 */
+#define LABEL_ALIGN_WEST   3
 #define OFF_SETFGCOLOR_VT         0xD0 /* Button/Label::SetFgColor — also updates TextImage */
 #define OFF_PAGETAB_ACTIVE        0x108
 #define OFF_PAGETAB_ACTIVE_FG     0x109
@@ -135,6 +136,7 @@ static void EnsureSurfaceHooks(void);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb);
+static void DrawPillAt(int x0, int y0, int w, int h, unsigned int packedRgba);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
@@ -689,6 +691,84 @@ static void PaintControlPlate(void *thisPtr)
     DrawRoundedFillAt(0, 0, w, h, r, fill, 1, 1);
 }
 
+static int IsSettingsToggle(void *thisPtr)
+{
+    return lstrcmpiA(PanelName(thisPtr), "CrosshairTranslucencyCheckbox") == 0;
+}
+
+static int IsAdvancedSettingsRow(void *thisPtr)
+{
+    int w = 0, h = 0;
+    if (thisPtr == NULL || g_GetSize == NULL) {
+        return 0;
+    }
+    if (lstrcmpiA(PanelName(thisPtr), "Advanced") != 0) {
+        return 0;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    return w >= 200 && h >= 28;
+}
+
+static void DrawToggleSwitch(void *thisPtr)
+{
+    int w = 0, h = 0;
+    int on;
+    int trackH;
+    int trackW;
+    int x;
+    int y;
+    int knob;
+    unsigned int track;
+    if (g_GetSize == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 20 || h < 12) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    on = VtableFlag(thisPtr, OFF_BUTTON_ISSELECTED_VT);
+    trackH = 22;
+    if (trackH > h) {
+        trackH = h;
+    }
+    trackW = 40;
+    if (trackW > w) {
+        trackW = w;
+    }
+    x = w - trackW;
+    if (x < 0) {
+        x = 0;
+    }
+    y = (h - trackH) / 2;
+    track = on ? ThemeRgbPacked(g_theme.accentRgb) : ThemeRgbPacked(g_theme.trackRgb);
+    DrawPillAt(x, y, trackW, trackH, track);
+    knob = trackH - 6;
+    if (knob < 10) {
+        knob = trackH - 2;
+    }
+    DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob, 0xF5F5F7u);
+}
+
+static void DrawRowChevron(int w, int h)
+{
+    int cx;
+    int cy;
+    int i;
+    unsigned int col;
+    if (w < 24 || h < 12) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    col = ThemeRgbPacked(g_theme.mutedRgb);
+    cx = w - 18;
+    cy = h / 2;
+    for (i = 0; i < 5; i++) {
+        SurfaceFill(cx + i, cy - 4 + i, cx + i + 2, cy - 3 + i, col);
+        SurfaceFill(cx + i, cy + 3 - i, cx + i + 2, cy + 4 - i, col);
+    }
+}
+
 static int ShouldRoundButton(void *thisPtr)
 {
     int w = 0, h = 0;
@@ -719,6 +799,9 @@ static int ShouldRoundButton(void *thisPtr)
     }
     name = PanelName(thisPtr);
     if (NameIsMenuChrome(name) || NameIsOptionsTab(name)) {
+        return 0;
+    }
+    if (lstrcmpiA(name, "Advanced") == 0) {
         return 0;
     }
     return 1;
@@ -1398,6 +1481,26 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
     if (IsFrameSystemButton(thisPtr)) {
         return;
     }
+    if (IsSettingsToggle(thisPtr)) {
+        DrawToggleSwitch(thisPtr);
+        return;
+    }
+    if (IsAdvancedSettingsRow(thisPtr)) {
+        void **vtable = *(void ***)thisPtr;
+        SetIntFn setAlign = (SetIntFn)vtable[OFF_BUTTON_SETCONTENTALIGNMENT_VT / sizeof(void *)];
+        SetTextInsetFn setInset = (SetTextInsetFn)vtable[OFF_BUTTON_SETTEXTINSET_VT / sizeof(void *)];
+        int w = 0, h = 0;
+        setInset(thisPtr, 16, 0);
+        setAlign(thisPtr, LABEL_ALIGN_WEST);
+        ForceWhiteOnTransparent(thisPtr);
+        SetFgColorWhite(thisPtr);
+        if (g_origButtonPaint != NULL) {
+            g_origButtonPaint(thisPtr);
+        }
+        g_GetSize(thisPtr, &w, &h);
+        DrawRowChevron(w, h);
+        return;
+    }
 
     roundBtn = ShouldRoundButton(thisPtr);
     tab = IsPageTab(thisPtr);
@@ -1533,6 +1636,10 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
 
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
+    if (IsSettingsToggle(thisPtr)) {
+        DrawToggleSwitch(thisPtr);
+        return;
+    }
     if (IsProgressBar(thisPtr) || IsTitleCloseButton(thisPtr)) {
         return;
     }

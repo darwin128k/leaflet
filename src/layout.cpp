@@ -435,10 +435,16 @@ static void FitVideoPage(void *page, int pageW, int pageH)
     if (rightY + 8 > slidersY) {
         slidersY = rightY + 8;
     }
-    LayoutNamed(page, "brightness label", pad, slidersY, leftW, 24);
-    LayoutNamed(page, "Gamma label", rightX, slidersY, rightW, 24);
-    LayoutNamed(page, "Brightness", pad, slidersY + 22, leftW, 50);
-    LayoutNamed(page, "Gamma", rightX, slidersY + 22, rightW > 160 ? 160 : rightW, 50);
+    {
+        int sliderW = leftW;
+        if (sliderW > rightW) {
+            sliderW = rightW;
+        }
+        LayoutNamed(page, "brightness label", pad, slidersY, sliderW, 24);
+        LayoutNamed(page, "Gamma label", rightX, slidersY, sliderW, 24);
+        LayoutNamed(page, "Brightness", pad, slidersY + 22, sliderW, 50);
+        LayoutNamed(page, "Gamma", rightX, slidersY + 22, sliderW, 50);
+    }
     LayoutNamed(page, "Label5", pad, slidersY + 74, pageW - pad * 2, 40);
 }
 

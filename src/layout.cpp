@@ -381,6 +381,76 @@ static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h
     }
 }
 
+static void LayoutNamedAll(void *page, const char *name, int x, int y, int w, int h)
+{
+    int n;
+    int i;
+    if (page == NULL || g_GetChildCount == NULL || g_GetChild == NULL) {
+        LayoutNamed(page, name, x, y, w, h);
+        return;
+    }
+    n = g_GetChildCount(page);
+    if (n < 0 || n > 64) {
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        void *child = g_GetChild(page, i);
+        if (child == NULL || lstrcmpiA(LayoutPanelName(child), name) != 0) {
+            continue;
+        }
+        g_SetPos(child, x, y);
+        if (w > 0 && h > 0) {
+            g_SetSize(child, w, h);
+        }
+    }
+}
+
+static void FitVoicePage(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    const int rowH = OPTIONS_TOGGLE_ROW_H;
+    int colW;
+    int leftX;
+    int rightX;
+    int y;
+    void *tx;
+    if (page == NULL || LayoutFindChild(page, "voice_modenable") == NULL) {
+        return;
+    }
+    colW = (pageW - pad * 3) / 2;
+    if (colW < 140) {
+        colW = pageW - pad * 2;
+    }
+    leftX = pad;
+    rightX = pad + colW + pad;
+    if (rightX + 80 > pageW) {
+        rightX = pad;
+    }
+    y = pad;
+    LayoutNamed(page, "voice_modenable", pad, y, pageW - pad * 2, rowH);
+    y += rowH + 14;
+    LayoutNamed(page, "Transmit label", leftX, y, colW, 20);
+    LayoutNamed(page, "Label1", rightX, y, colW, 20);
+    y += 22;
+    tx = LayoutFindChild(page, "#GameUI_MicrophoneVolume");
+    if (tx == NULL) {
+        tx = LayoutFindChild(page, "Microphone Volume");
+    }
+    if (tx != NULL) {
+        g_SetPos(tx, leftX, y);
+        g_SetSize(tx, colW, 40);
+    }
+    LayoutNamed(page, "VoiceReceive", rightX, y, colW, 40);
+    y += 50;
+    LayoutNamedAll(page, "MicMeter", leftX, y, colW, 32);
+    y += 40;
+    LayoutNamed(page, "TestMicrophone", leftX, y, 160, 24);
+    y += 36;
+    LayoutNamed(page, "MicBoost", pad, y, pageW - pad * 2, rowH);
+    y += rowH + 16;
+    LayoutNamed(page, "MilesVoiceLabel", pad, y, pageW - pad * 2, 48);
+}
+
 static void FitVideoPage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
@@ -593,18 +663,7 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         }
     }
     if (LayoutFindChild(page, "voice_modenable") != NULL) {
-        static const char *kVoice[] = { "voice_modenable", "MicBoost" };
-        int vi;
-        for (vi = 0; vi < 2; vi++) {
-            void *check = LayoutFindChild(page, kVoice[vi]);
-            int vx = 0, vy = 0;
-            if (check == NULL) {
-                continue;
-            }
-            g_GetPos(check, &vx, &vy);
-            g_SetPos(check, pad, vy);
-            g_SetSize(check, pageW - pad * 2, OPTIONS_TOGGLE_ROW_H);
-        }
+        FitVoicePage(page, pageW, pageH);
     }
     FitVideoPage(page, pageW, pageH);
 }

@@ -914,7 +914,10 @@ static int ShouldRoundPanel(void *thisPtr)
     if (NameIsMenuChrome(name) || IsBannerPanel(w, h)) {
         return 0;
     }
-    if (lstrcmpiA(name, "PanelListPanel") == 0) {
+    /* Options PropertySheet is already inside the dialog chrome; rounding it
+     * plus the active page draws two nested boxes. Same for list panels
+     * sitting inside a rounded page (Advanced). */
+    if (lstrcmpiA(name, "Sheet") == 0 || NameContainsI(name, "listpanel")) {
         return 0;
     }
     if (NameContainsI(name, "MOTD") || NameContainsI(name, "TeamMenu")

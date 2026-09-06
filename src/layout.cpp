@@ -35,6 +35,9 @@ typedef void(__thiscall *SetTwoColorsFn)(void *item, unsigned int packedFg, unsi
 typedef void(__thiscall *AddPageFn)(void *dialog, void *page, const char *title);
 typedef void *(__cdecl *GameUiNewFn)(unsigned int size);
 typedef void(__thiscall *PageCtorFn)(void *self, void *parent);
+typedef void *(__thiscall *FindChildByNameFn)(void *self, const char *name, int recurse);
+typedef int (__thiscall *GetChildCountFn)(void *self);
+typedef void *(__thiscall *GetChildFn)(void *self, int index);
 
 static SetPosFn g_SetPos = NULL;
 static SetSizeFn g_SetSize = NULL;
@@ -58,6 +61,9 @@ static PerformLayoutFn g_origPanelListLayout = NULL;
 static BYTE g_panelListLayoutTrampoline[32];
 static GameUiNewFn g_gameUiNew = NULL;
 static PageCtorFn g_multiAdvPageCtor = NULL;
+static FindChildByNameFn g_FindChildByName = NULL;
+static GetChildCountFn g_GetChildCount = NULL;
+static GetChildFn g_GetChild = NULL;
 static const char *g_titleMultiplayer = NULL;
 static const char *g_titleAdvancedTab = NULL;
 static int g_addingAdvancedTab = 0;
@@ -80,6 +86,9 @@ static void InstallPropertySheetLayoutHook(BYTE *base);
 static void InstallAdvancedOptionsTab(BYTE *base);
 static void InstallPanelListPaddingHook(BYTE *base);
 
+#define RVA_FINDCHILDBYNAME 0x00044100u /* vgui2::Panel::FindChildByName(const char*, bool); ret 8 */
+#define RVA_GETCHILDCOUNT   0x00046260u /* Panel::GetChildCount(); eax count */
+#define RVA_GETCHILD        0x00046280u /* Panel::GetChild(int); ret 4 */
 #define RVA_SETPOS     0x000436f0u
 #define RVA_GETPOS     0x00043720u /* Panel::GetPos(int&,int&); sits between SetPos and SetSize, same two-stack-arg thunk shape */
 #define RVA_SETSIZE    0x00043750u
@@ -130,7 +139,7 @@ static void InstallPanelListPaddingHook(BYTE *base);
 #define PLIST_LAYOUT_STOLEN 6u /* 83 EC 0C 53 55 56 */
 #define OFF_PLIST_ITEM_COUNT 0x74
 #define OFF_PLIST_ITEM_SLOTS 0x7c
-#define OPTIONS_INNER_PAD 12
+#define OPTIONS_INNER_PAD 16
 #define BANNER_Y 24 /* extra top inset so the CS logo isn't flush with the title bar */
 #define LOGO_MENU_GAP 16
 #define OFF_GAMEMENU_BUTTON   0xA8 /* CGameMenuButton*; stock PerformLayout SetPos/SetSize this */
@@ -192,6 +201,211 @@ static void InstallPanelListPaddingHook(BYTE *base);
  * also runs through this same hooked layout routine. */
 #define OFF_PANEL_NAME 0x44
 #define MAIN_MENU_PANEL_NAME "GameMenu"
+
+static const char *LayoutPanelName(void *panel)
+{
+    const char *name;
+    if (panel == NULL || IsBadReadPtr(panel, OFF_PANEL_NAME + sizeof(void *))) {
+        return "";
+    }
+    name = *(const char **)((char *)panel + OFF_PANEL_NAME);
+    if (name == NULL || IsBadReadPtr(name, 1)) {
+        return "";
+    }
+    return name;
+}
+
+static void LayoutMoveFooterButton(void *child, int x, int y)
+{
+    int w = 0, h = 0;
+    if (child == NULL || g_SetPos == NULL) {
+        return;
+    }
+    if (g_GetSize != NULL) {
+        g_GetSize(child, &w, &h);
+    }
+    if (h <= 0) {
+        h = 24;
+    }
+    g_SetPos(child, x, y);
+}
+
+static void *LayoutFindChild(void *page, const char *name)
+{
+    int n;
+    int i;
+    if (page == NULL || name == NULL) {
+        return NULL;
+    }
+    if (g_FindChildByName != NULL) {
+        void *found = g_FindChildByName(page, name, 1);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    if (g_GetChildCount == NULL || g_GetChild == NULL) {
+        return NULL;
+    }
+    n = g_GetChildCount(page);
+    if (n < 0 || n > 64) {
+        return NULL;
+    }
+    for (i = 0; i < n; i++) {
+        void *child = g_GetChild(page, i);
+        const char *cn;
+        if (child == NULL) {
+            continue;
+        }
+        cn = LayoutPanelName(child);
+        if (lstrcmpiA(cn, name) == 0) {
+            return child;
+        }
+    }
+    return NULL;
+}
+
+static void *LayoutFooterButtonHeuristic(void *page, void *change, void *clear)
+{
+    int n;
+    int i;
+    if (page == NULL || g_GetChildCount == NULL || g_GetChild == NULL || g_GetSize == NULL) {
+        return NULL;
+    }
+    n = g_GetChildCount(page);
+    if (n < 0 || n > 64) {
+        return NULL;
+    }
+    for (i = 0; i < n; i++) {
+        void *child = g_GetChild(page, i);
+        const char *cn;
+        int w = 0, h = 0, x = 0, y = 0;
+        if (child == NULL || child == change || child == clear) {
+            continue;
+        }
+        cn = LayoutPanelName(child);
+        if (lstrcmpiA(cn, "listpanel_keybindlist") == 0 || lstrcmpiA(cn, "PanelListPanel") == 0) {
+            continue;
+        }
+        g_GetSize(child, &w, &h);
+        if (g_GetPos != NULL) {
+            g_GetPos(child, &x, &y);
+        }
+        if (h < 20 || h > 28 || w < 70 || w > 160) {
+            continue;
+        }
+        if (lstrcmpiA(cn, "Defaults") == 0 || lstrcmpiA(cn, "UseDefaults") == 0 || x < 80) {
+            return child;
+        }
+    }
+    return NULL;
+}
+
+static void PlaceKeyboardFooterButtons(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    void *defaults;
+    void *change;
+    void *clear;
+    int changeW = 84, changeH = 24;
+    int clearW = 84, clearH = 24;
+    int defW = 105, defH = 24;
+    int y;
+    if (page == NULL || pageW < 80 || pageH < 80) {
+        return;
+    }
+    defaults = LayoutFindChild(page, "Defaults");
+    change = LayoutFindChild(page, "ChangeKeyButton");
+    clear = LayoutFindChild(page, "ClearKeyButton");
+    if (change == NULL) {
+        change = *(void **)((char *)page + 0xBC);
+        if (change == NULL || IsBadReadPtr(change, 8) ||
+            lstrcmpiA(LayoutPanelName(change), "ChangeKeyButton") != 0) {
+            change = NULL;
+        }
+    }
+    if (clear == NULL) {
+        clear = *(void **)((char *)page + 0xC0);
+        if (clear == NULL || IsBadReadPtr(clear, 8) ||
+            lstrcmpiA(LayoutPanelName(clear), "ClearKeyButton") != 0) {
+            clear = NULL;
+        }
+    }
+    if (defaults == NULL) {
+        defaults = LayoutFooterButtonHeuristic(page, change, clear);
+    }
+    if (defaults == NULL && change == NULL && clear == NULL) {
+        return;
+    }
+    if (change != NULL && g_GetSize != NULL) {
+        g_GetSize(change, &changeW, &changeH);
+        if (changeH <= 0) {
+            changeH = 24;
+        }
+    }
+    if (clear != NULL && g_GetSize != NULL) {
+        g_GetSize(clear, &clearW, &clearH);
+        if (clearH <= 0) {
+            clearH = 24;
+        }
+    }
+    if (defaults != NULL && g_GetSize != NULL) {
+        g_GetSize(defaults, &defW, &defH);
+        if (defH <= 0) {
+            defH = 24;
+        }
+    }
+    y = pageH - pad - changeH;
+    if (clear != NULL) {
+        LayoutMoveFooterButton(clear, pageW - pad - clearW, y);
+    }
+    if (change != NULL) {
+        LayoutMoveFooterButton(change, pageW - pad - clearW - 8 - changeW, y);
+    }
+    if (defaults != NULL) {
+        LayoutMoveFooterButton(defaults, pad, y);
+    }
+}
+
+static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    const int btnH = 24;
+    const int reserve = pad + btnH + 4;
+    void *advList;
+    void *keyList;
+    if (page == NULL || pageW < 80 || pageH < 80) {
+        return;
+    }
+    advList = LayoutFindChild(page, "PanelListPanel");
+    if (advList == NULL) {
+        void *maybe = *(void **)((char *)page + OFF_MULTIADV_LISTPANEL);
+        if (maybe != NULL && !IsBadReadPtr(maybe, 8) &&
+            lstrcmpiA(LayoutPanelName(maybe), "PanelListPanel") == 0) {
+            advList = maybe;
+        }
+    }
+    if (advList != NULL) {
+        g_SetPos(advList, pad, pad);
+        g_SetSize(advList, pageW - pad * 2, pageH - pad * 2);
+    }
+    keyList = LayoutFindChild(page, "listpanel_keybindlist");
+    if (keyList == NULL) {
+        void *maybe = *(void **)((char *)page + 0xB8);
+        if (maybe != NULL && !IsBadReadPtr(maybe, 8) &&
+            lstrcmpiA(LayoutPanelName(maybe), "listpanel_keybindlist") == 0) {
+            keyList = maybe;
+        }
+    }
+    if (keyList != NULL) {
+        int listH = pageH - pad * 2 - reserve;
+        if (listH < 80) {
+            listH = 80;
+        }
+        g_SetPos(keyList, pad, pad);
+        g_SetSize(keyList, pageW - pad * 2, listH);
+        PlaceKeyboardFooterButtons(page, pageW, pageH);
+    }
+}
 
 /* COptionsDialog::COptionsDialog (RVA 0x377c0) -- found via RTTI/xref to the
  * "OptionsDialog" panelName string literal it passes to PropertyDialog's
@@ -261,6 +475,22 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     g_SetFlag41 = (SetBoolFn)(base + RVA_SETFLAG41);
     g_SetFlag42 = (SetBoolFn)(base + RVA_SETFLAG42);
     g_GetScheme = (GetSchemeFn)(base + RVA_GETSCHEME);
+    {
+        static const BYTE kFindChildPrologue[6] = { 0x53, 0x55, 0x56, 0x57, 0x8B, 0xF9 };
+        static const BYTE kChildCountPrologue[4] = { 0x53, 0x56, 0x57, 0x8B };
+        static const BYTE kGetChildPrologue[6] = { 0x53, 0x55, 0x56, 0x57, 0x8B, 0xF1 };
+        if (memcmp(base + RVA_FINDCHILDBYNAME, kFindChildPrologue, 6) == 0) {
+            g_FindChildByName = (FindChildByNameFn)(base + RVA_FINDCHILDBYNAME);
+        }
+        if (memcmp(base + RVA_GETCHILDCOUNT, kChildCountPrologue, 4) == 0) {
+            g_GetChildCount = (GetChildCountFn)(base + RVA_GETCHILDCOUNT);
+        }
+        if (memcmp(base + RVA_GETCHILD, kGetChildPrologue, 6) == 0) {
+            g_GetChild = (GetChildFn)(base + RVA_GETCHILD);
+        }
+        HookLog("LayoutHook_Init: FindChild=%p GetChildCount=%p GetChild=%p",
+                (void *)g_FindChildByName, (void *)g_GetChildCount, (void *)g_GetChild);
+    }
     HookLog("LayoutHook_Init: base=%p g_SetPos=%p g_GetPos=%p g_SetSize=%p g_GetSize=%p g_SetBgColor=%p g_SetBackgroundTypeCandidate=%p flags=%p/%p/%p g_GetScheme=%p",
             (void *)base, (void *)g_SetPos, (void *)g_GetPos, (void *)g_SetSize, (void *)g_GetSize, (void *)g_SetBgColor, (void *)g_SetBackgroundTypeCandidate,
             (void *)g_SetFlag40, (void *)g_SetFlag41, (void *)g_SetFlag42, (void *)g_GetScheme);
@@ -960,16 +1190,7 @@ static void __fastcall PropertySheetLayout_Hook(void *thisPtr)
                 }
                 g_SetPos(activePage, contentX, pad);
                 g_SetSize(activePage, pageWide, pageTall);
-                {
-                    const char *pageName = *(const char **)((char *)activePage + OFF_PANEL_NAME);
-                    if (pageName != NULL && lstrcmpiA(pageName, "MultiplayerAdvanced") == 0) {
-                        void *list = *(void **)((char *)activePage + OFF_MULTIADV_LISTPANEL);
-                        if (list != NULL && !IsBadReadPtr(list, sizeof(void *))) {
-                            g_SetPos(list, 0, 0);
-                            g_SetSize(list, pageWide, pageTall);
-                        }
-                    }
-                }
+                FitOptionsPageLikeAdvanced(activePage, pageWide, pageTall);
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1154,6 +1375,9 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
             if (innerW < 32) {
                 innerW = 32;
             }
+            /* Stock y is already inside the list; only inset x/width and a
+             * one-shot top/bottom gap via the first row's y. Do not add pad
+             * to y every pass -- orig layout resets x/y each time. */
             g_SetPos(child, pad, y + pad);
             g_SetSize(child, innerW, h);
         }

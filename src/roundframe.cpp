@@ -140,8 +140,8 @@ static unsigned int g_edgeBodyColor = 0;
 static void EnsureSurfaceHooks(void);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
-static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb);
-static void DrawPillAt(int x0, int y0, int w, int h, unsigned int packedRgba);
+static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb);
+static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
@@ -723,7 +723,7 @@ static void DrawToggleSwitch(void *thisPtr)
     int x;
     int y;
     int knob;
-    unsigned int track;
+    uint32_t trackRgb;
     if (g_GetSize == NULL) {
         return;
     }
@@ -746,13 +746,14 @@ static void DrawToggleSwitch(void *thisPtr)
         x = 0;
     }
     y = (h - trackH) / 2;
-    track = on ? ThemeRgbPacked(g_theme.accentRgb) : ThemeRgbPacked(g_theme.trackRgb);
-    DrawPillAt(x, y, trackW, trackH, track);
+    trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
+    DrawPillAt(x, y, trackW, trackH, trackRgb);
     knob = trackH - 6;
     if (knob < 10) {
         knob = trackH - 2;
     }
-    DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob, 0xF5F5F7u);
+    DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
+               0xF5F5F7u, trackRgb);
 }
 
 static void DrawRowChevron(int w, int h)
@@ -1092,9 +1093,10 @@ static int PillInset(int y, int h)
     return r - half;
 }
 
-static void DrawPillAt(int x0, int y0, int w, int h, unsigned int packedRgba)
+static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb)
 {
     int y;
+    int r;
     if (w <= 0 || h <= 0) {
         return;
     }
@@ -1102,27 +1104,13 @@ static void DrawPillAt(int x0, int y0, int w, int h, unsigned int packedRgba)
         h -= 1;
     }
     if (h < 2) {
-        SurfaceFill(x0, y0, x0 + w, y0 + h, packedRgba);
+        SurfaceFill(x0, y0, x0 + w, y0 + h, ThemeRgbPacked(rgb));
         return;
     }
+    r = h / 2;
     for (y = 0; y < h; y++) {
-        int inset = PillInset(y, h);
-        int xL;
-        int xR;
-        if (inset < 0) {
-            inset = 0;
-        }
-        if (inset * 2 >= w) {
-            inset = (w - 1) / 2;
-            if (inset < 0) {
-                continue;
-            }
-        }
-        xL = x0 + inset;
-        xR = x0 + w - inset;
-        if (xR > xL) {
-            SurfaceFill(xL, y0 + y, xR, y0 + y + 1, packedRgba);
-        }
+        float inset = CornerInsetF(y, h, r);
+        FillSpanSoft(y0 + y, (float)x0 + inset, (float)(x0 + w) - inset, rgb);
     }
 }
 
@@ -1420,10 +1408,10 @@ static void PaintMacCloseDot(void *thisPtr)
     } else {
         rgb = 0xFF5F57u;
     }
-    DrawAaDisk(ox, oy, d, rgb);
+    DrawAaDisk(ox, oy, d, rgb, g_theme.windowRgb);
 }
 
-static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb)
+static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb)
 {
     float cx;
     float cy;
@@ -1442,13 +1430,13 @@ static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb)
     }
     cx = (float)x0 + (float)d * 0.5f;
     cy = (float)y0 + (float)d * 0.5f;
-    rad = (float)d * 0.5f - 0.4f;
+    rad = (float)d * 0.5f - 0.35f;
     sr = (int)((rgb >> 16) & 0xFFu);
     sg = (int)((rgb >> 8) & 0xFFu);
     sb = (int)(rgb & 0xFFu);
-    br = (int)((g_theme.windowRgb >> 16) & 0xFFu);
-    bg = (int)((g_theme.windowRgb >> 8) & 0xFFu);
-    bb = (int)(g_theme.windowRgb & 0xFFu);
+    br = (int)((bgRgb >> 16) & 0xFFu);
+    bg = (int)((bgRgb >> 8) & 0xFFu);
+    bb = (int)(bgRgb & 0xFFu);
     for (py = y0; py < y0 + d; py++) {
         for (px = x0; px < x0 + d; px++) {
             float dx = ((float)px + 0.5f) - cx;
@@ -1611,7 +1599,7 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
         barH -= 1;
     }
     y = (h - barH) / 2;
-    DrawPillAt(0, y, w, barH, ThemeRgbPacked(g_theme.trackRgb));
+    DrawPillAt(0, y, w, barH, g_theme.trackRgb);
     fillW = (int)(p * (float)w + 0.5f);
     if (fillW > 0) {
         int row;

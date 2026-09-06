@@ -328,7 +328,8 @@ static int NameIsOptionsTab(const char *name)
     if (name == NULL || name[0] == '\0') {
         return 0;
     }
-    if (lstrcmpiA(name, "Multiplayer") == 0 || lstrcmpiA(name, "Keyboard") == 0
+    if (lstrcmpiA(name, "Multiplayer") == 0 || lstrcmpiA(name, "Advanced") == 0
+        || lstrcmpiA(name, "Keyboard") == 0
         || lstrcmpiA(name, "Mouse") == 0 || lstrcmpiA(name, "Audio") == 0
         || lstrcmpiA(name, "Video") == 0 || lstrcmpiA(name, "Voice") == 0
         || lstrcmpiA(name, "Lock") == 0) {

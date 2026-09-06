@@ -32,6 +32,9 @@ typedef void(__thiscall *IImageSetSizeFn)(void *image, int wide, int tall);
 typedef void(__thiscall *IImagePaintFn)(void *image);
 typedef char(__thiscall *IsArmedFn)(void *item);
 typedef void(__thiscall *SetTwoColorsFn)(void *item, unsigned int packedFg, unsigned int packedBg);
+typedef void(__thiscall *AddPageFn)(void *dialog, void *page, const char *title);
+typedef void *(__cdecl *GameUiNewFn)(unsigned int size);
+typedef void(__thiscall *PageCtorFn)(void *self, void *parent);
 
 static SetPosFn g_SetPos = NULL;
 static SetSizeFn g_SetSize = NULL;
@@ -49,6 +52,13 @@ static PerformLayoutFn g_origBasePanelLayout = NULL;
 static BYTE g_basePanelLayoutTrampoline[32];
 static PerformLayoutFn g_origPropSheetLayout = NULL;
 static BYTE g_propSheetLayoutTrampoline[32];
+static AddPageFn g_origPropDialogAddPage = NULL;
+static BYTE g_propDialogAddPageTrampoline[32];
+static GameUiNewFn g_gameUiNew = NULL;
+static PageCtorFn g_multiAdvPageCtor = NULL;
+static const char *g_titleMultiplayer = NULL;
+static const char *g_titleAdvancedTab = NULL;
+static int g_addingAdvancedTab = 0;
 static volatile LONG g_disabledAfterCrash = 0;
 static volatile LONG g_paintDisabled = 0;
 static volatile LONG g_propSheetLayoutDisabled = 0;
@@ -65,6 +75,7 @@ static volatile DWORD g_lastGameMenuLayoutTick = 0;
 static void InstallPaintBackgroundHook(BYTE *base);
 static void InstallBasePanelLayoutHook(BYTE *base);
 static void InstallPropertySheetLayoutHook(BYTE *base);
+static void InstallAdvancedOptionsTab(BYTE *base);
 
 #define RVA_SETPOS     0x000436f0u
 #define RVA_GETPOS     0x00043720u /* Panel::GetPos(int&,int&); sits between SetPos and SetSize, same two-stack-arg thunk shape */
@@ -101,9 +112,16 @@ static void InstallPropertySheetLayoutHook(BYTE *base);
                                           * every PropertyDialog subclass in the process (Options, Multiplayer
                                           * Advanced, Create Game...), so the name alone doesn't uniquely pick out
                                           * the Options dialog. */
-#define OPTIONS_SHEET_TAB_COUNT 7 /* Multiplayer/Keyboard/Mouse/Audio/Video/Voice/Lock -- narrows the shared "Sheet"
-                                  * name down to specifically the Options dialog, same style of count-based guard
-                                  * as the visibleCount==4 check already used below for the main menu icons. */
+#define OPTIONS_SHEET_TAB_COUNT_MIN 7 /* Multiplayer…Lock */
+#define OPTIONS_SHEET_TAB_COUNT_MAX 8 /* + Advanced tab after Multiplayer */
+#define RVA_PROPERTYDIALOG_ADDPAGE 0x00065f00u /* PropertyDialog::AddPage — thunk to Sheet, ecx+0x110 */
+#define ADDPAGE_STOLEN 6u /* 8B 89 10 01 00 00 */
+#define RVA_GAMEUI_NEW 0x0007a483u
+#define RVA_CMULTIADV_PAGE_CTOR 0x000353b0u /* CMultiplayerAdvancedPage::CMultiplayerAdvancedPage(Panel*) */
+#define OFF_PROPERTYDIALOG_SHEET 0x110
+#define RVA_SKIP_STOCK_ADV_PAGE 0x00037995u /* jz that adds CMultiplayerAdvancedPage after Voice; we insert after MP */
+#define RVA_STR_GAMEUI_MULTIPLAYER 0x000b1ee8u
+#define RVA_STR_GAMEUI_ADV_NOELLIPSIS 0x000b1e64u /* #GameUI_AdvancedNoEllipsis */
 #define BANNER_Y 24 /* extra top inset so the CS logo isn't flush with the title bar */
 #define LOGO_MENU_GAP 16
 #define OFF_GAMEMENU_BUTTON   0xA8 /* CGameMenuButton*; stock PerformLayout SetPos/SetSize this */
@@ -240,6 +258,7 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     InstallPaintBackgroundHook(base);
     InstallBasePanelLayoutHook(base);
     InstallPropertySheetLayoutHook(base);
+    InstallAdvancedOptionsTab(base);
     PatchOptionsDialogSize(base);
     RoundFrame_Init(hOriginalGameUI);
     Prefetch_Bind(hOriginalGameUI);
@@ -851,7 +870,7 @@ static void __fastcall PropertySheetLayout_Hook(void *thisPtr)
 
         showTabs = *(char *)((char *)thisPtr + OFF_SHEET_SHOW_TABS);
         count = *(int *)((char *)thisPtr + OFF_SHEET_PAGETAB_COUNT);
-        if (!showTabs || count != OPTIONS_SHEET_TAB_COUNT) {
+        if (!showTabs || count < OPTIONS_SHEET_TAB_COUNT_MIN || count > OPTIONS_SHEET_TAB_COUNT_MAX) {
             return;
         }
 
@@ -976,6 +995,99 @@ static void InstallPropertySheetLayoutHook(BYTE *base)
     FlushInstructionCache(GetCurrentProcess(), g_propSheetLayoutTrampoline, sizeof(g_propSheetLayoutTrampoline));
     HookLog("InstallPropertySheetLayoutHook: hooked %p -> %p trampoline=%p",
             (void *)target, (void *)PropertySheetLayout_Hook, (void *)g_propSheetLayoutTrampoline);
+}
+
+static void __fastcall PropertyDialogAddPage_Hook(void *dlg, void *edx, void *page, const char *title)
+{
+    (void)edx;
+    if (g_origPropDialogAddPage != NULL) {
+        g_origPropDialogAddPage(dlg, page, title);
+    }
+    if (g_addingAdvancedTab || dlg == NULL || title == NULL || g_titleMultiplayer == NULL) {
+        return;
+    }
+    if (lstrcmpA(title, g_titleMultiplayer) != 0) {
+        return;
+    }
+    if (g_gameUiNew == NULL || g_multiAdvPageCtor == NULL || g_origPropDialogAddPage == NULL) {
+        return;
+    }
+    __try {
+        void *sheet = *(void **)((char *)dlg + OFF_PROPERTYDIALOG_SHEET);
+        int count;
+        void *adv;
+        if (sheet == NULL) {
+            return;
+        }
+        count = *(int *)((char *)sheet + OFF_SHEET_PAGETAB_COUNT);
+        if (count != 1) {
+            return;
+        }
+        adv = g_gameUiNew(0xc0u);
+        if (adv == NULL) {
+            return;
+        }
+        g_addingAdvancedTab = 1;
+        g_multiAdvPageCtor(adv, dlg);
+        g_origPropDialogAddPage(dlg, adv, g_titleAdvancedTab);
+        g_addingAdvancedTab = 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_addingAdvancedTab = 0;
+        HookLog("PropertyDialogAddPage_Hook: failed to insert Advanced tab");
+    }
+}
+
+static void InstallAdvancedOptionsTab(BYTE *base)
+{
+    static const BYTE kAddPagePrologue[6] = { 0x8B, 0x89, 0x10, 0x01, 0x00, 0x00 };
+    BYTE *target = base + RVA_PROPERTYDIALOG_ADDPAGE;
+    BYTE *skip = base + RVA_SKIP_STOCK_ADV_PAGE;
+    DWORD oldProtect;
+    INT32 relBack;
+    INT32 relHook;
+    DWORD trampProtect;
+
+    g_gameUiNew = (GameUiNewFn)(base + RVA_GAMEUI_NEW);
+    g_multiAdvPageCtor = (PageCtorFn)(base + RVA_CMULTIADV_PAGE_CTOR);
+    g_titleMultiplayer = (const char *)(base + RVA_STR_GAMEUI_MULTIPLAYER);
+    g_titleAdvancedTab = (const char *)(base + RVA_STR_GAMEUI_ADV_NOELLIPSIS);
+
+    if (skip[0] == 0x74 && skip[1] == 0x48) {
+        if (VirtualProtect(skip, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            skip[0] = 0xEB;
+            VirtualProtect(skip, 1, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), skip, 1);
+        }
+    }
+
+    if (memcmp(target, kAddPagePrologue, ADDPAGE_STOLEN) != 0) {
+        HookLog("InstallAdvancedOptionsTab: AddPage prologue mismatch at %p, skip", (void *)target);
+        return;
+    }
+
+    memcpy(g_propDialogAddPageTrampoline, target, ADDPAGE_STOLEN);
+    g_propDialogAddPageTrampoline[ADDPAGE_STOLEN] = 0xE9;
+    relBack = (INT32)((target + ADDPAGE_STOLEN) - (g_propDialogAddPageTrampoline + ADDPAGE_STOLEN + 5));
+    memcpy(g_propDialogAddPageTrampoline + ADDPAGE_STOLEN + 1, &relBack, sizeof(relBack));
+
+    if (!VirtualProtect(g_propDialogAddPageTrampoline, sizeof(g_propDialogAddPageTrampoline),
+                        PAGE_EXECUTE_READWRITE, &trampProtect)) {
+        return;
+    }
+    g_origPropDialogAddPage = (AddPageFn)(void *)g_propDialogAddPageTrampoline;
+
+    if (!VirtualProtect(target, ADDPAGE_STOLEN, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return;
+    }
+    relHook = (INT32)((BYTE *)PropertyDialogAddPage_Hook - (target + 5));
+    target[0] = 0xE9;
+    memcpy(target + 1, &relHook, sizeof(relHook));
+    target[5] = 0x90;
+    VirtualProtect(target, ADDPAGE_STOLEN, oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, ADDPAGE_STOLEN);
+    FlushInstructionCache(GetCurrentProcess(), g_propDialogAddPageTrampoline,
+                          sizeof(g_propDialogAddPageTrampoline));
+    HookLog("InstallAdvancedOptionsTab: AddPage hooked %p", (void *)target);
 }
 
 static void LayoutHook_Inner(void *thisPtr)

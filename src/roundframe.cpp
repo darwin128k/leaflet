@@ -914,6 +914,9 @@ static int ShouldRoundPanel(void *thisPtr)
     if (NameIsMenuChrome(name) || IsBannerPanel(w, h)) {
         return 0;
     }
+    if (lstrcmpiA(name, "PanelListPanel") == 0) {
+        return 0;
+    }
     if (NameContainsI(name, "MOTD") || NameContainsI(name, "TeamMenu")
         || NameContainsI(name, "ClassMenu") || NameContainsI(name, "MapInfo")
         || lstrcmpiA(name, "Message") == 0

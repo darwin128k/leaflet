@@ -54,6 +54,8 @@ static PerformLayoutFn g_origPropSheetLayout = NULL;
 static BYTE g_propSheetLayoutTrampoline[32];
 static AddPageFn g_origPropDialogAddPage = NULL;
 static BYTE g_propDialogAddPageTrampoline[32];
+static PerformLayoutFn g_origPanelListLayout = NULL;
+static BYTE g_panelListLayoutTrampoline[32];
 static GameUiNewFn g_gameUiNew = NULL;
 static PageCtorFn g_multiAdvPageCtor = NULL;
 static const char *g_titleMultiplayer = NULL;
@@ -76,6 +78,7 @@ static void InstallPaintBackgroundHook(BYTE *base);
 static void InstallBasePanelLayoutHook(BYTE *base);
 static void InstallPropertySheetLayoutHook(BYTE *base);
 static void InstallAdvancedOptionsTab(BYTE *base);
+static void InstallPanelListPaddingHook(BYTE *base);
 
 #define RVA_SETPOS     0x000436f0u
 #define RVA_GETPOS     0x00043720u /* Panel::GetPos(int&,int&); sits between SetPos and SetSize, same two-stack-arg thunk shape */
@@ -122,6 +125,12 @@ static void InstallAdvancedOptionsTab(BYTE *base);
 #define RVA_SKIP_STOCK_ADV_PAGE 0x00037995u /* jz that adds CMultiplayerAdvancedPage after Voice; we insert after MP */
 #define RVA_STR_GAMEUI_MULTIPLAYER 0x000b1ee8u
 #define RVA_STR_GAMEUI_ADV_NOELLIPSIS 0x000b1e64u /* #GameUI_AdvancedNoEllipsis */
+#define OFF_MULTIADV_LISTPANEL 0xBC /* CPanelListPanel* stored in CMultiplayerAdvancedPage ctor */
+#define RVA_CPANELLIST_PERFORMLAYOUT 0x00031d40u
+#define PLIST_LAYOUT_STOLEN 6u /* 83 EC 0C 53 55 56 */
+#define OFF_PLIST_ITEM_COUNT 0x74
+#define OFF_PLIST_ITEM_SLOTS 0x7c
+#define OPTIONS_INNER_PAD 12
 #define BANNER_Y 24 /* extra top inset so the CS logo isn't flush with the title bar */
 #define LOGO_MENU_GAP 16
 #define OFF_GAMEMENU_BUTTON   0xA8 /* CGameMenuButton*; stock PerformLayout SetPos/SetSize this */
@@ -259,6 +268,7 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     InstallBasePanelLayoutHook(base);
     InstallPropertySheetLayoutHook(base);
     InstallAdvancedOptionsTab(base);
+    InstallPanelListPaddingHook(base);
     PatchOptionsDialogSize(base);
     RoundFrame_Init(hOriginalGameUI);
     Prefetch_Bind(hOriginalGameUI);
@@ -853,8 +863,7 @@ static void __fastcall PropertySheetLayout_Hook(void *thisPtr)
         int maxWide = 0;
         int maxTall = 0;
         int i;
-        const int marginX = 4;
-        const int startY = 4;
+        const int pad = OPTIONS_INNER_PAD;
         const int rowSpacing = 2;
         const int contentGap = 6;
         int columnWide;
@@ -916,36 +925,51 @@ static void __fastcall PropertySheetLayout_Hook(void *thisPtr)
         maxTall = g_tabColumnMaxTall;
 
         columnWide = maxWide + 12;
-        y = startY;
+        y = pad;
         for (i = 0; i < count; i++) {
             void *tab = tabs[i];
             if (tab == NULL) {
                 continue;
             }
-            g_SetPos(tab, marginX, y);
+            g_SetPos(tab, pad, y);
             g_SetSize(tab, columnWide, maxTall);
             y += maxTall + rowSpacing;
         }
 
         activePage = *(void **)((char *)thisPtr + OFF_SHEET_ACTIVE_PAGE);
         if (activePage != NULL && g_GetPos != NULL) {
-            /* Reuse the stock pass's own Y/height for the active page --
-             * that's what already keeps it clear of the OK/Cancel/Apply row
-             * that PropertyDialog positions below the sheet. Overriding Y=0
-             * and height=Sheet's full GetSize() (the original approach here)
-             * stretched the page down over that button row. Only X/width
-             * need to change, to make room for the left-anchored tab column. */
             int stockX = 0, stockY = 0;
             int stockWide = 0, stockTall = 0;
             int sheetWide = 0, sheetTall = 0;
-            int contentX = marginX + columnWide + contentGap;
+            int contentX = pad + columnWide + contentGap;
             g_GetPos(activePage, &stockX, &stockY);
             g_GetSize(activePage, &stockWide, &stockTall);
             g_GetSize(thisPtr, &sheetWide, &sheetTall);
 
-            if (sheetWide - contentX > 0 && stockTall > 0) {
-                g_SetPos(activePage, contentX, stockY);
-                g_SetSize(activePage, sheetWide - contentX, stockTall);
+            if (sheetWide - contentX - pad > 0 && sheetTall - pad * 2 > 0) {
+                int pageWide = sheetWide - contentX - pad;
+                int pageTall = sheetTall - pad * 2;
+                if (stockTall > 0) {
+                    int stockBottom = stockY + stockTall;
+                    if (pad + pageTall > stockBottom && stockBottom > pad + 32) {
+                        pageTall = stockBottom - pad;
+                    }
+                }
+                if (pageTall < 32) {
+                    pageTall = 32;
+                }
+                g_SetPos(activePage, contentX, pad);
+                g_SetSize(activePage, pageWide, pageTall);
+                {
+                    const char *pageName = *(const char **)((char *)activePage + OFF_PANEL_NAME);
+                    if (pageName != NULL && lstrcmpiA(pageName, "MultiplayerAdvanced") == 0) {
+                        void *list = *(void **)((char *)activePage + OFF_MULTIADV_LISTPANEL);
+                        if (list != NULL && !IsBadReadPtr(list, sizeof(void *))) {
+                            g_SetPos(list, 0, 0);
+                            g_SetSize(list, pageWide, pageTall);
+                        }
+                    }
+                }
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1088,6 +1112,89 @@ static void InstallAdvancedOptionsTab(BYTE *base)
     FlushInstructionCache(GetCurrentProcess(), g_propDialogAddPageTrampoline,
                           sizeof(g_propDialogAddPageTrampoline));
     HookLog("InstallAdvancedOptionsTab: AddPage hooked %p", (void *)target);
+}
+
+static void __fastcall PanelListLayout_Hook(void *thisPtr)
+{
+    int n;
+    int i;
+    int listW = 0, listH = 0;
+    void **slots;
+    const int pad = OPTIONS_INNER_PAD;
+    const int scrollW = 24;
+
+    if (g_origPanelListLayout != NULL) {
+        g_origPanelListLayout(thisPtr);
+    }
+    if (thisPtr == NULL || g_GetPos == NULL || g_SetPos == NULL || g_GetSize == NULL || g_SetSize == NULL) {
+        return;
+    }
+    __try {
+        n = *(int *)((char *)thisPtr + OFF_PLIST_ITEM_COUNT);
+        slots = *(void ***)((char *)thisPtr + OFF_PLIST_ITEM_SLOTS);
+        if (n <= 0 || n > 256 || slots == NULL) {
+            return;
+        }
+        g_GetSize(thisPtr, &listW, &listH);
+        for (i = 0; i < n; i++) {
+            void *slot = slots[i];
+            void *child;
+            int x = 0, y = 0, w = 0, h = 0;
+            int innerW;
+            if (slot == NULL || IsBadReadPtr(slot, sizeof(void *))) {
+                continue;
+            }
+            child = *(void **)slot;
+            if (child == NULL || IsBadReadPtr(child, sizeof(void *))) {
+                continue;
+            }
+            g_GetPos(child, &x, &y);
+            g_GetSize(child, &w, &h);
+            innerW = listW - pad * 2 - scrollW;
+            if (innerW < 32) {
+                innerW = 32;
+            }
+            g_SetPos(child, pad, y + pad);
+            g_SetSize(child, innerW, h);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        HookLog("PanelListLayout_Hook: exception, leaving stock list layout");
+    }
+}
+
+static void InstallPanelListPaddingHook(BYTE *base)
+{
+    static const BYTE kPrologue[6] = { 0x83, 0xEC, 0x0C, 0x53, 0x55, 0x56 };
+    BYTE *target = base + RVA_CPANELLIST_PERFORMLAYOUT;
+    DWORD oldProtect;
+    INT32 relBack;
+    INT32 relHook;
+    DWORD trampProtect;
+
+    if (memcmp(target, kPrologue, PLIST_LAYOUT_STOLEN) != 0) {
+        HookLog("InstallPanelListPaddingHook: prologue mismatch at %p, skip", (void *)target);
+        return;
+    }
+    memcpy(g_panelListLayoutTrampoline, target, PLIST_LAYOUT_STOLEN);
+    g_panelListLayoutTrampoline[PLIST_LAYOUT_STOLEN] = 0xE9;
+    relBack = (INT32)((target + PLIST_LAYOUT_STOLEN) - (g_panelListLayoutTrampoline + PLIST_LAYOUT_STOLEN + 5));
+    memcpy(g_panelListLayoutTrampoline + PLIST_LAYOUT_STOLEN + 1, &relBack, sizeof(relBack));
+    if (!VirtualProtect(g_panelListLayoutTrampoline, sizeof(g_panelListLayoutTrampoline),
+                        PAGE_EXECUTE_READWRITE, &trampProtect)) {
+        return;
+    }
+    g_origPanelListLayout = (PerformLayoutFn)(void *)g_panelListLayoutTrampoline;
+    if (!VirtualProtect(target, PLIST_LAYOUT_STOLEN, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return;
+    }
+    relHook = (INT32)((BYTE *)PanelListLayout_Hook - (target + 5));
+    target[0] = 0xE9;
+    memcpy(target + 1, &relHook, sizeof(relHook));
+    target[5] = 0x90;
+    VirtualProtect(target, PLIST_LAYOUT_STOLEN, oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, PLIST_LAYOUT_STOLEN);
+    FlushInstructionCache(GetCurrentProcess(), g_panelListLayoutTrampoline,
+                          sizeof(g_panelListLayoutTrampoline));
 }
 
 static void LayoutHook_Inner(void *thisPtr)

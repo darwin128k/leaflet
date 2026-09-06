@@ -832,12 +832,6 @@ static void DrawToggleSwitch(void *thisPtr)
         x = 0;
     }
     y = (h - trackH) / 2;
-    if (lstrcmpiA(PanelName(thisPtr), "LowVideoDetail") == 0 && h > 32) {
-        y = (28 - trackH) / 2;
-        if (y < 0) {
-            y = 0;
-        }
-    }
     trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
     DrawPillAt(x, y, trackW, trackH, trackRgb);
     knob = trackH - 6;
@@ -1000,11 +994,7 @@ static void PaintCvarToggleRow(void *thisPtr)
         setInset(thisPtr, 0, 0);
     }
     if (setAlign != NULL) {
-        if (lstrcmpiA(PanelName(thisPtr), "LowVideoDetail") == 0) {
-            setAlign(thisPtr, 0); /* a_northwest — first line lines up with other rows */
-        } else {
-            setAlign(thisPtr, LABEL_ALIGN_WEST);
-        }
+        setAlign(thisPtr, LABEL_ALIGN_WEST);
     }
     ForceWhiteOnTransparent(thisPtr);
     SetFgColorWhite(thisPtr);
@@ -1015,13 +1005,21 @@ static void PaintCvarToggleRow(void *thisPtr)
                 (SetDrawWidthFn)(g_gameUiBase + RVA_TEXTIMAGE_SETDRAWWIDTH);
             if (IsMouseToggleName(PanelName(thisPtr))) {
                 setDrawWidth(textImg, 150);
-            } else {
-                setDrawWidth(textImg, w - 48);
             }
         }
     }
     if (g_origButtonPaint != NULL) {
         g_origButtonPaint(thisPtr);
+    }
+    EnsureSurfaceHooks();
+    if (w >= 80) {
+        const int switchW = 40;
+        const int gap = 12;
+        int coverL = w - switchW - gap;
+        if (coverL < 0) {
+            coverL = 0;
+        }
+        SurfaceFill(coverL, 0, w - switchW, h, ThemeRgbPacked(g_theme.windowRgb));
     }
     DrawToggleSwitch(thisPtr);
 }

@@ -71,6 +71,16 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_FRAME_PAINTBG_ALT     0x00023970u
 #define RVA_PROGRESSBAR_PAINTBG   0x000696b0u /* vgui2::ProgressBar::PaintBackground — cube segments */
 #define RVA_PROGRESSBAR_VTABLE    0x000a1dccu
+#define RVA_SLIDER_VTABLE         0x000a194cu /* vgui2::Slider */
+#define RVA_CCVARSLIDER_VTABLE    0x00097a3cu /* CCvarSlider : Slider */
+#define RVA_SLIDER_PAINT          0x00066e00u /* Slider::Paint — 4px nob in SliderFgColor */
+#define RVA_SLIDER_PAINTBG        0x000673d0u /* Slider::PaintBackground — Panel fill + groove + ticks */
+#define RVA_SLIDER_RECOMPUTENOB   0x00066a80u /* Slider::RecomputeNobPosFromValue */
+#define OFF_SLIDER_NOB0           0x74
+#define OFF_SLIDER_NOB1           0x78
+#define OFF_SLIDER_MIN            0x8C
+#define OFF_SLIDER_MAX            0x90
+#define OFF_SLIDER_VALUE          0x94
 #define RVA_CROSSHAIRIMAGE_PAINT  0x0003b010u /* CrosshairImagePanel::Paint — engine FillRGBA, no VGUI clip */
 #define OFF_PROGRESS              0x78 /* float 0..1; confirmed via fmul [esi+0x78] in PaintBackground */
 
@@ -104,6 +114,8 @@ static PaintFn g_origPaint18530 = NULL;
 static PaintFn g_origPaintBorder = NULL;
 static PaintFn g_origFramePaintBgAlt = NULL;
 static PaintFn g_origProgressPaintBg = NULL;
+static PaintFn g_origSliderPaint = NULL;
+static PaintFn g_origSliderPaintBg = NULL;
 static PaintFn g_origCrosshairPaint = NULL;
 static BYTE g_panelPaintBgTramp[32];
 static BYTE g_buttonPaintTramp[32];
@@ -113,6 +125,8 @@ static BYTE g_paint18530Tramp[32];
 static BYTE g_paintBorderTramp[32];
 static BYTE g_framePaintBgAltTramp[32];
 static BYTE g_progressPaintBgTramp[32];
+static BYTE g_sliderPaintTramp[32];
+static BYTE g_sliderPaintBgTramp[32];
 static BYTE g_crosshairPaintTramp[32];
 static BYTE g_titlePlaceTramp[32];
 
@@ -147,6 +161,7 @@ static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int 
                               int roundTop, int roundBottom);
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb);
 static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb);
+static int PillInset(int y, int h);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
@@ -385,6 +400,17 @@ static int IsProgressBar(void *thisPtr)
     }
     vt = *(void **)thisPtr;
     return vt == (void *)(g_gameUiBase + RVA_PROGRESSBAR_VTABLE);
+}
+
+static int IsOptionsSlider(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_SLIDER_VTABLE)
+        || vt == (void *)(g_gameUiBase + RVA_CCVARSLIDER_VTABLE);
 }
 
 static int IsTitleCloseButton(void *thisPtr)
@@ -820,6 +846,132 @@ static void DrawToggleSwitch(void *thisPtr)
     }
     DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
                0xF5F5F7u, trackRgb);
+}
+
+static void DrawValueSlider(void *thisPtr)
+{
+    int w = 0;
+    int h = 0;
+    int n0;
+    int n1;
+    int minv;
+    int maxv;
+    int val;
+    int trackH;
+    int knob;
+    int padX;
+    int trackY;
+    int cx;
+    int fillW;
+    int row;
+    int knobX;
+    int knobY;
+
+    if (g_GetSize == NULL || thisPtr == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 32 || h < 12) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    {
+        typedef void(__thiscall *RecomputeFn)(void *self);
+        ((RecomputeFn)(g_gameUiBase + RVA_SLIDER_RECOMPUTENOB))(thisPtr);
+    }
+    n0 = *(int *)((char *)thisPtr + OFF_SLIDER_NOB0);
+    n1 = *(int *)((char *)thisPtr + OFF_SLIDER_NOB1);
+    minv = *(int *)((char *)thisPtr + OFF_SLIDER_MIN);
+    maxv = *(int *)((char *)thisPtr + OFF_SLIDER_MAX);
+    val = *(int *)((char *)thisPtr + OFF_SLIDER_VALUE);
+    if (n1 < n0) {
+        int tmp = n0;
+        n0 = n1;
+        n1 = tmp;
+    }
+    trackH = 10;
+    knob = 16;
+    if (trackH > h - 4) {
+        trackH = (h - 4) & ~1;
+    }
+    if (trackH < 6) {
+        trackH = h < 8 ? (h & ~1) : 6;
+    }
+    if (knob > h) {
+        knob = h - 2;
+        if (knob < 10) {
+            knob = trackH;
+        }
+    }
+    padX = knob / 2;
+    if (padX < 8) {
+        padX = 8;
+    }
+    if (w - padX * 2 < 16) {
+        padX = 4;
+    }
+    trackY = 8 + (4 - trackH) / 2;
+    if (h < 28) {
+        trackY = (h - trackH) / 2;
+    }
+    if (trackY < 0) {
+        trackY = 0;
+    }
+    if (trackY + trackH > h) {
+        trackY = h - trackH;
+    }
+    cx = (n0 + n1) / 2;
+    if (cx < padX || cx > w - padX || (n0 == 0 && n1 == 0)) {
+        float t = 0.0f;
+        if (maxv > minv) {
+            t = (float)(val - minv) / (float)(maxv - minv);
+        }
+        if (t < 0.0f) {
+            t = 0.0f;
+        }
+        if (t > 1.0f) {
+            t = 1.0f;
+        }
+        cx = padX + (int)(t * (float)(w - padX * 2) + 0.5f);
+    }
+    if (cx < padX) {
+        cx = padX;
+    }
+    if (cx > w - padX) {
+        cx = w - padX;
+    }
+    DrawPillAt(padX, trackY, w - padX * 2, trackH, g_theme.trackRgb);
+    fillW = cx - padX + trackH / 2;
+    if (fillW < trackH) {
+        fillW = (cx > padX) ? (cx - padX) : 0;
+    }
+    if (fillW > w - padX * 2) {
+        fillW = w - padX * 2;
+    }
+    if (fillW > 0) {
+        for (row = 0; row < trackH; row++) {
+            int inset = PillInset(row, trackH);
+            int xL = padX + inset;
+            int xTrackR = w - padX - inset;
+            int xFillR = padX + fillW - inset;
+            if (xFillR > xTrackR) {
+                xFillR = xTrackR;
+            }
+            if (xFillR > xL) {
+                SurfaceFill(xL, trackY + row, xFillR, trackY + row + 1,
+                            ThemeRgbPacked(g_theme.accentRgb));
+            }
+        }
+    }
+    knobX = cx - knob / 2;
+    knobY = trackY + (trackH - knob) / 2;
+    if (knobX < 0) {
+        knobX = 0;
+    }
+    if (knobY < 0) {
+        knobY = 0;
+    }
+    DrawAaDisk(knobX, knobY, knob, 0xF5F5F7u, g_theme.windowRgb);
 }
 
 static void PaintCvarToggleRow(void *thisPtr)
@@ -1685,6 +1837,16 @@ static void __fastcall FramePaintBgAlt_Hook(void *thisPtr)
     RunRoundedBackground(thisPtr, g_origFramePaintBgAlt);
 }
 
+static void __fastcall SliderPaintBg_Hook(void *thisPtr)
+{
+    (void)thisPtr;
+}
+
+static void __fastcall SliderPaint_Hook(void *thisPtr)
+{
+    DrawValueSlider(thisPtr);
+}
+
 static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
 {
     int w = 0, h = 0;
@@ -1830,7 +1992,7 @@ static void __fastcall PaintBorder_Hook(void *thisPtr)
     if (IsCvarToggleRow(thisPtr)) {
         return;
     }
-    if (IsProgressBar(thisPtr) || IsTitleCloseButton(thisPtr)) {
+    if (IsProgressBar(thisPtr) || IsOptionsSlider(thisPtr) || IsTitleCloseButton(thisPtr)) {
         return;
     }
     if (InterlockedCompareExchange(&g_roundDisabled, 0, 0) != 0) {
@@ -1907,6 +2069,18 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
         InstallNearHook(base + RVA_PROGRESSBAR_PAINTBG, 6, kProgressBgPrologue,
                         g_progressPaintBgTramp, sizeof(g_progressPaintBgTramp),
                         (void *)ProgressPaintBg_Hook, &g_origProgressPaintBg, "ProgressBarPaintBackground");
+    }
+    {
+        static const BYTE kSliderPaintPrologue[8] = { 0x56, 0x8B, 0xF1, 0xE8, 0x18, 0x00, 0x00, 0x00 };
+        InstallNearHook(base + RVA_SLIDER_PAINT, 8, kSliderPaintPrologue,
+                        g_sliderPaintTramp, sizeof(g_sliderPaintTramp),
+                        (void *)SliderPaint_Hook, &g_origSliderPaint, "SliderPaint");
+    }
+    {
+        static const BYTE kSliderBgPrologue[6] = { 0x83, 0xEC, 0x14, 0x53, 0x56, 0x57 };
+        InstallNearHook(base + RVA_SLIDER_PAINTBG, 6, kSliderBgPrologue,
+                        g_sliderPaintBgTramp, sizeof(g_sliderPaintBgTramp),
+                        (void *)SliderPaintBg_Hook, &g_origSliderPaintBg, "SliderPaintBackground");
     }
     {
         static const BYTE kXhPaintPrologue[6] = { 0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1 };

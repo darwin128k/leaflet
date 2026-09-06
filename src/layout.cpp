@@ -388,9 +388,8 @@ static void FitVideoPage(void *page, int pageW, int pageH)
     const int comboH = 24;
     const int labelH = 20;
     const int gap = 5;
-    const int leftW = 200;
+    int colW;
     int rightX;
-    int rightW;
     int y;
     int rightY;
     int slidersY;
@@ -401,50 +400,43 @@ static void FitVideoPage(void *page, int pageW, int pageH)
         && LayoutFindChild(page, "Renderer") == NULL) {
         return;
     }
-    rightX = pad + leftW + pad;
-    rightW = pageW - pad - rightX;
-    if (rightW < 160) {
-        rightX = pageW / 2;
-        rightW = pageW - pad - rightX;
+    colW = (pageW - pad * 3) / 2;
+    if (colW < 140) {
+        colW = 140;
     }
+    rightX = pad + colW + pad;
     y = pad;
-    LayoutNamed(page, "Label2", pad, y, leftW, labelH);
-    LayoutNamed(page, "Renderer", pad, y + labelH, leftW, comboH);
+    LayoutNamed(page, "Label2", pad, y, colW, labelH);
+    LayoutNamed(page, "Renderer", pad, y + labelH, colW, comboH);
     y += labelH + comboH + gap;
-    LayoutNamed(page, "Label1", pad, y, leftW, labelH);
-    LayoutNamed(page, "Resolution", pad, y + labelH, leftW, comboH);
+    LayoutNamed(page, "Label1", pad, y, colW, labelH);
+    LayoutNamed(page, "Resolution", pad, y + labelH, colW, comboH);
     y += labelH + comboH + gap;
-    LayoutNamed(page, "Label4", pad, y, leftW, labelH);
-    LayoutNamed(page, "AspectRatio", pad, y + labelH, leftW, comboH);
+    LayoutNamed(page, "Label4", pad, y, colW, labelH);
+    LayoutNamed(page, "AspectRatio", pad, y + labelH, colW, comboH);
 
     rightY = pad;
-    LayoutNamed(page, "Windowed", rightX, rightY, rightW, rowH);
+    LayoutNamed(page, "Windowed", rightX, rightY, colW, rowH);
     rightY += rowH + gap;
-    LayoutNamed(page, "VSync", rightX, rightY, rightW, rowH);
+    LayoutNamed(page, "VSync", rightX, rightY, colW, rowH);
     rightY += rowH + gap;
-    LayoutNamed(page, "HDModels", rightX, rightY, rightW, rowH);
+    LayoutNamed(page, "HDModels", rightX, rightY, colW, rowH);
     rightY += rowH + gap;
-    LayoutNamed(page, "AddonsFolder", rightX, rightY, rightW, rowH);
+    LayoutNamed(page, "AddonsFolder", rightX, rightY, colW, rowH);
     rightY += rowH + gap;
-    LayoutNamed(page, "LowVideoDetail", rightX, rightY, rightW, 36);
-        rightY += 36 + gap;
-    LayoutNamed(page, "DetailTextures", rightX, rightY, rightW, rowH);
+    LayoutNamed(page, "LowVideoDetail", rightX, rightY, colW, 36);
+    rightY += 36 + gap;
+    LayoutNamed(page, "DetailTextures", rightX, rightY, colW, rowH);
     rightY += rowH + gap;
 
     slidersY = y + labelH + comboH + 16;
     if (rightY + 8 > slidersY) {
         slidersY = rightY + 8;
     }
-    {
-        int sliderW = leftW;
-        if (sliderW > rightW) {
-            sliderW = rightW;
-        }
-        LayoutNamed(page, "brightness label", pad, slidersY, sliderW, 24);
-        LayoutNamed(page, "Gamma label", rightX, slidersY, sliderW, 24);
-        LayoutNamed(page, "Brightness", pad, slidersY + 22, sliderW, 50);
-        LayoutNamed(page, "Gamma", rightX, slidersY + 22, sliderW, 50);
-    }
+    LayoutNamed(page, "brightness label", pad, slidersY, colW, 24);
+    LayoutNamed(page, "Gamma label", rightX, slidersY, colW, 24);
+    LayoutNamed(page, "Brightness", pad, slidersY + 22, colW, 50);
+    LayoutNamed(page, "Gamma", rightX, slidersY + 22, colW, 50);
     LayoutNamed(page, "Label5", pad, slidersY + 74, pageW - pad * 2, 40);
 }
 

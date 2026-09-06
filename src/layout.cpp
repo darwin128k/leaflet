@@ -384,7 +384,7 @@ static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h
 static void FitVideoPage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
-    const int rowH = 24;
+    const int rowH = OPTIONS_TOGGLE_ROW_H;
     const int comboH = 24;
     const int labelH = 20;
     const int gap = 5;
@@ -544,11 +544,11 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
             "Reverse Mouse label", "Label1", "Mouse filter", "Joystick label",
             "Label2", "AutoaimLabel", "RawInputLabel"
         };
-        const int toggleW = 40;
+        const int toggleW = OPTIONS_TOGGLE_TRACK_W + 4;
         const int titleW = 150;
         const int descX = pad + titleW + 8;
-        const int rowH = 24;
-        const int rowStep = 29; /* 24px row + 5px gap */
+        const int rowH = OPTIONS_TOGGLE_ROW_H;
+        const int rowStep = OPTIONS_TOGGLE_ROW_H + 5;
         int row;
         int descW = pageW - pad - toggleW - 8 - descX;
         int y0 = pad + 4;
@@ -590,6 +590,20 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         sensTitle = LayoutFindChild(page, "Label3");
         if (sensTitle != NULL) {
             g_SetPos(sensTitle, pad, y0 + 7 * rowStep + 8);
+        }
+    }
+    if (LayoutFindChild(page, "voice_modenable") != NULL) {
+        static const char *kVoice[] = { "voice_modenable", "MicBoost" };
+        int vi;
+        for (vi = 0; vi < 2; vi++) {
+            void *check = LayoutFindChild(page, kVoice[vi]);
+            int vx = 0, vy = 0;
+            if (check == NULL) {
+                continue;
+            }
+            g_GetPos(check, &vx, &vy);
+            g_SetPos(check, pad, vy);
+            g_SetSize(check, pageW - pad * 2, OPTIONS_TOGGLE_ROW_H);
         }
     }
     FitVideoPage(page, pageW, pageH);
@@ -1561,8 +1575,8 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
             g_GetPos(child, &x, &y);
             g_GetSize(child, &w, &h);
             innerW = listW - pad * 2 - scrollW;
-            if (innerW < 32) {
-                innerW = 32;
+            if (innerW < 36) {
+                innerW = 36;
             }
             g_SetPos(child, pad, y);
             g_SetSize(child, innerW, h);

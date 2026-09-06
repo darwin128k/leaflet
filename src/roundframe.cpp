@@ -759,6 +759,15 @@ static int IsVideoToggleName(const char *name)
         || lstrcmpiA(name, "DetailTextures") == 0;
 }
 
+static int IsVoiceToggleName(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    return lstrcmpiA(name, "voice_modenable") == 0
+        || lstrcmpiA(name, "MicBoost") == 0;
+}
+
 static int IsSettingsToggle(void *thisPtr)
 {
     return lstrcmpiA(PanelName(thisPtr), "CrosshairTranslucencyCheckbox") == 0;
@@ -779,14 +788,12 @@ static int IsCvarToggleRow(void *thisPtr)
         && lstrcmpiA(name, "DescCheckButton") != 0
         && !IsMouseToggleName(name)
         && !IsVideoToggleName(name)
+        && !IsVoiceToggleName(name)
         && !IsSettingsToggle(thisPtr)) {
         return 0;
     }
     g_GetSize(thisPtr, &w, &h);
-    if (IsMouseToggleName(name) || IsVideoToggleName(name)) {
-        return w >= 36 && h >= 18 && h <= 56;
-    }
-    return w >= 36 && h >= 18 && h <= 40;
+    return w >= 20 && h >= 12 && h <= 56;
 }
 
 static int IsAdvancedSettingsRow(void *thisPtr)
@@ -821,13 +828,9 @@ static void DrawToggleSwitch(void *thisPtr)
     }
     EnsureSurfaceHooks();
     on = VtableFlag(thisPtr, OFF_BUTTON_ISSELECTED_VT);
-    /* Same size as Advanced list checks (stock ~24px rows), not Mouse's 28. */
-    trackH = 18;
-    trackW = 36;
-    knob = 14;
-    if (trackW > w) {
-        trackW = w;
-    }
+    trackH = OPTIONS_TOGGLE_TRACK_H;
+    trackW = OPTIONS_TOGGLE_TRACK_W;
+    knob = OPTIONS_TOGGLE_KNOB;
     x = w - trackW;
     if (x < 0) {
         x = 0;
@@ -1050,8 +1053,8 @@ static void PaintCvarToggleRow(void *thisPtr)
     }
     EnsureSurfaceHooks();
     if (w >= 80) {
-        const int switchW = 40;
-        const int gap = 12;
+        const int switchW = OPTIONS_TOGGLE_TRACK_W;
+        const int gap = OPTIONS_TOGGLE_GAP;
         int coverL = w - switchW - gap;
         if (coverL < 0) {
             coverL = 0;

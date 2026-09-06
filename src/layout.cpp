@@ -385,8 +385,11 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         }
     }
     if (advList != NULL) {
-        g_SetPos(advList, pad, pad);
-        g_SetSize(advList, pageW - pad * 2, pageH - pad * 2);
+        /* Same as Multiplayer: the page is the rounded frame. The list
+         * fills it so we don't get a second inset box, and stock scroll
+         * range still reaches Radar type. */
+        g_SetPos(advList, 0, 0);
+        g_SetSize(advList, pageW, pageH);
     }
     keyList = LayoutFindChild(page, "listpanel_keybindlist");
     if (keyList == NULL) {
@@ -1375,10 +1378,7 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
             if (innerW < 32) {
                 innerW = 32;
             }
-            /* Stock y is already inside the list; only inset x/width and a
-             * one-shot top/bottom gap via the first row's y. Do not add pad
-             * to y every pass -- orig layout resets x/y each time. */
-            g_SetPos(child, pad, y + pad);
+            g_SetPos(child, pad, y);
             g_SetSize(child, innerW, h);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {

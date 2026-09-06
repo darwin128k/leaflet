@@ -384,7 +384,7 @@ static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h
 static void FitVideoPage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
-    const int rowH = 28;
+    const int rowH = 24;
     const int comboH = 24;
     const int labelH = 20;
     const int gap = 5;
@@ -544,11 +544,11 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
             "Reverse Mouse label", "Label1", "Mouse filter", "Joystick label",
             "Label2", "AutoaimLabel", "RawInputLabel"
         };
-        const int toggleW = 44;
+        const int toggleW = 40;
         const int titleW = 150;
         const int descX = pad + titleW + 8;
-        const int rowH = 28;
-        const int rowStep = 33; /* 28px row + 5px gap */
+        const int rowH = 24;
+        const int rowStep = 29; /* 24px row + 5px gap */
         int row;
         int descW = pageW - pad - toggleW - 8 - descX;
         int y0 = pad + 4;

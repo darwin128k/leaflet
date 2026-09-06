@@ -778,10 +778,8 @@ static int IsCvarToggleRow(void *thisPtr)
         && vt != (void *)(g_gameUiBase + RVA_DESCCHECKBUTTON_VTABLE)
         && lstrcmpiA(name, "DescCheckButton") != 0
         && !IsMouseToggleName(name)
-        && !IsVideoToggleName(name)) {
-        return 0;
-    }
-    if (IsSettingsToggle(thisPtr)) {
+        && !IsVideoToggleName(name)
+        && !IsSettingsToggle(thisPtr)) {
         return 0;
     }
     g_GetSize(thisPtr, &w, &h);
@@ -823,11 +821,10 @@ static void DrawToggleSwitch(void *thisPtr)
     }
     EnsureSurfaceHooks();
     on = VtableFlag(thisPtr, OFF_BUTTON_ISSELECTED_VT);
-    trackH = 22;
-    if (trackH > h) {
-        trackH = h;
-    }
-    trackW = 40;
+    /* Same size as Advanced list checks (stock ~24px rows), not Mouse's 28. */
+    trackH = 18;
+    trackW = 36;
+    knob = 14;
     if (trackW > w) {
         trackW = w;
     }
@@ -836,12 +833,11 @@ static void DrawToggleSwitch(void *thisPtr)
         x = 0;
     }
     y = (h - trackH) / 2;
+    if (y < 0) {
+        y = 0;
+    }
     trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
     DrawPillAt(x, y, trackW, trackH, trackRgb);
-    knob = trackH - 6;
-    if (knob < 10) {
-        knob = trackH - 2;
-    }
     DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
                0xF5F5F7u, trackRgb);
 }
@@ -1789,10 +1785,6 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
     if (IsFrameSystemButton(thisPtr)) {
         return;
     }
-    if (IsSettingsToggle(thisPtr)) {
-        DrawToggleSwitch(thisPtr);
-        return;
-    }
     if (IsCvarToggleRow(thisPtr)) {
         PaintCvarToggleRow(thisPtr);
         return;
@@ -2025,7 +2017,6 @@ static void __fastcall CrosshairPaint_Hook(void *thisPtr)
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
     if (IsSettingsToggle(thisPtr)) {
-        DrawToggleSwitch(thisPtr);
         return;
     }
     if (IsCvarToggleRow(thisPtr)) {

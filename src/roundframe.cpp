@@ -755,6 +755,9 @@ static int IsCvarToggleRow(void *thisPtr)
         return 0;
     }
     g_GetSize(thisPtr, &w, &h);
+    if (IsMouseToggleName(name) || IsVideoToggleName(name)) {
+        return w >= 36 && h >= 18 && h <= 56;
+    }
     return w >= 36 && h >= 18 && h <= 40;
 }
 

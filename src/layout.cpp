@@ -366,6 +366,18 @@ static void PlaceKeyboardFooterButtons(void *page, int pageW, int pageH)
     }
 }
 
+static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h)
+{
+    void *c = LayoutFindChild(page, name);
+    if (c == NULL) {
+        return;
+    }
+    g_SetPos(c, x, y);
+    if (w > 0 && h > 0) {
+        g_SetSize(c, w, h);
+    }
+}
+
 static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
@@ -469,6 +481,51 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         if (sensTitle != NULL) {
             g_SetPos(sensTitle, pad, y0 + 7 * rowStep + 8);
         }
+    }
+    if (LayoutFindChild(page, "Renderer") != NULL
+        && LayoutFindChild(page, "Windowed") != NULL) {
+        const int rowH = 28;
+        const int comboH = 24;
+        const int labelH = 20;
+        const int gap = 5;
+        const int leftW = 200;
+        int rightX = pad + leftW + pad;
+        int rightW = pageW - pad - rightX;
+        int y;
+        int rightY;
+        int slidersY;
+        if (rightW < 160) {
+            rightX = pageW / 2;
+            rightW = pageW - pad - rightX;
+        }
+        y = pad;
+        LayoutNamed(page, "Label2", pad, y, leftW, labelH);
+        LayoutNamed(page, "Renderer", pad, y + labelH, leftW, comboH);
+        LayoutNamed(page, "Windowed", rightX, y + labelH, rightW, rowH);
+        y += labelH + comboH + gap;
+        LayoutNamed(page, "Label1", pad, y, leftW, labelH);
+        LayoutNamed(page, "Resolution", pad, y + labelH, leftW, comboH);
+        LayoutNamed(page, "VSync", rightX, y + labelH, rightW, rowH);
+        y += labelH + comboH + gap;
+        LayoutNamed(page, "Label4", pad, y, leftW, labelH);
+        LayoutNamed(page, "AspectRatio", pad, y + labelH, leftW, comboH);
+        LayoutNamed(page, "HDModels", rightX, y + labelH, rightW, rowH);
+        rightY = y + labelH + rowH + gap;
+        LayoutNamed(page, "AddonsFolder", rightX, rightY, rightW, rowH);
+        rightY += rowH + gap;
+        LayoutNamed(page, "LowVideoDetail", rightX, rightY, rightW, rowH);
+        rightY += rowH + gap;
+        LayoutNamed(page, "DetailTextures", rightX, rightY, rightW, rowH);
+        rightY += rowH + gap;
+        slidersY = y + labelH + comboH + 16;
+        if (rightY + 8 > slidersY) {
+            slidersY = rightY + 8;
+        }
+        LayoutNamed(page, "brightness label", pad, slidersY, leftW, 24);
+        LayoutNamed(page, "Gamma label", rightX, slidersY, rightW, 24);
+        LayoutNamed(page, "Brightness", pad, slidersY + 22, leftW, 50);
+        LayoutNamed(page, "Gamma", rightX, slidersY + 22, rightW > 160 ? 160 : rightW, 50);
+        LayoutNamed(page, "Label5", pad, slidersY + 74, pageW - pad * 2, 40);
     }
 }
 

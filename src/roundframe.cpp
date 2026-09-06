@@ -153,13 +153,100 @@ static unsigned int ThemeStrokePacked(void)
 static int ThemeStrokeThickness(void)
 {
     int t = g_theme.borderWidth;
-    if (t < 1) {
-        t = 1;
+    /* 1px on a r=12 corner is a stair. Floor at 2. */
+    if (t < 2) {
+        t = 2;
     }
     if (t > 4) {
         t = 4;
     }
     return t;
+}
+
+static unsigned int MixRgbToWindow(uint32_t rgb, float a)
+{
+    int sr, sg, sb, br, bg, bb;
+    int or_, og, ob;
+    if (a <= 0.0f) {
+        return ThemeRgbPacked(g_theme.windowRgb);
+    }
+    if (a >= 1.0f) {
+        return ThemeRgbPacked(rgb);
+    }
+    sr = (int)((rgb >> 16) & 0xFFu);
+    sg = (int)((rgb >> 8) & 0xFFu);
+    sb = (int)(rgb & 0xFFu);
+    br = (int)((g_theme.windowRgb >> 16) & 0xFFu);
+    bg = (int)((g_theme.windowRgb >> 8) & 0xFFu);
+    bb = (int)(g_theme.windowRgb & 0xFFu);
+    or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
+    og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
+    ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
+    return ThemeRgbPacked(((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob);
+}
+
+/* Subpixel inset of a circular corner; same circle as the integer fill. */
+static float CornerInsetF(int y, int h, int r)
+{
+    float rf;
+    float py;
+    float dy;
+    float inside;
+    if (r <= 0 || h < r * 2) {
+        return 0.0f;
+    }
+    rf = (float)r;
+    py = (float)y + 0.5f;
+    if (py < rf) {
+        dy = rf - py;
+    } else if (py > (float)h - rf) {
+        dy = py - ((float)h - rf);
+    } else {
+        return 0.0f;
+    }
+    inside = rf * rf - dy * dy;
+    if (inside <= 0.0f) {
+        return rf;
+    }
+    return rf - sqrtf(inside);
+}
+
+static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
+{
+    int s;
+    int e;
+    float a0;
+    float a1;
+    if (x1 - x0 < 0.02f) {
+        return;
+    }
+    s = (int)x0;
+    e = (int)x1;
+    if (x0 < 0.0f) {
+        s = (int)x0 - 1;
+    }
+    if (s == e) {
+        SurfaceFill(s, y, s + 1, y + 1, MixRgbToWindow(rgb, x1 - x0));
+        return;
+    }
+    a0 = (float)(s + 1) - x0;
+    if (a0 < 0.0f) {
+        a0 = 0.0f;
+    }
+    if (a0 > 1.0f) {
+        a0 = 1.0f;
+    }
+    SurfaceFill(s, y, s + 1, y + 1, MixRgbToWindow(rgb, a0));
+    if (e > s + 1) {
+        SurfaceFill(s + 1, y, e, y + 1, ThemeRgbPacked(rgb));
+    }
+    a1 = x1 - (float)e;
+    if (a1 > 0.02f) {
+        if (a1 > 1.0f) {
+            a1 = 1.0f;
+        }
+        SurfaceFill(e, y, e + 1, y + 1, MixRgbToWindow(rgb, a1));
+    }
 }
 
 static int ISqrt(int n)
@@ -827,12 +914,16 @@ static void DrawRoundedStrokeAt(int x0, int y0, int w, int h, int r, unsigned in
     int y;
     int topR;
     int botR;
+    int innerRad;
+    uint32_t rgb;
+    (void)packedRgba;
     if (w <= 0 || h <= 0) {
         return;
     }
-    if (thickness < 1) {
-        thickness = 1;
+    if (thickness < 2) {
+        thickness = 2;
     }
+    rgb = g_theme.borderRgb;
     topR = roundTop ? r : 0;
     botR = roundBottom ? r : 0;
     if (topR * 2 + 4 > w) {
@@ -841,29 +932,50 @@ static void DrawRoundedStrokeAt(int x0, int y0, int w, int h, int r, unsigned in
     if (botR * 2 + 4 > w) {
         botR = ClampInt(w / 4, 0, botR);
     }
+    innerRad = r - thickness;
+    if (innerRad < 0) {
+        innerRad = 0;
+    }
+    if (!roundTop && !roundBottom) {
+        innerRad = 0;
+    }
     for (y = 0; y < h; y++) {
-        int inset = 0;
-        int xL;
-        int xR;
+        int cr = 0;
+        float inset;
+        float left;
+        float right;
         if (y < topR) {
-            inset = CornerInset(y, topR * 2, topR);
+            cr = topR;
         } else if (y >= h - botR) {
-            inset = CornerInset(botR + (y - (h - botR)), botR * 2, botR);
+            cr = botR;
         }
-        xL = x0 + inset;
-        xR = x0 + w - inset;
-        if (xR <= xL) {
+        inset = cr > 0 ? CornerInsetF(y, h, cr) : 0.0f;
+        left = (float)x0 + inset;
+        right = (float)(x0 + w) - inset;
+        if (right - left < 0.5f) {
             continue;
         }
         if (y < thickness || y >= h - thickness) {
-            SurfaceFill(xL, y0 + y, xR, y0 + y + 1, packedRgba);
+            FillSpanSoft(y0 + y, left, right, rgb);
         } else {
-            int tw = thickness;
-            if (xL + tw > xR) {
-                tw = xR - xL;
+            float innerInset = 0.0f;
+            float innerL;
+            float innerRgt;
+            int iy = y - thickness;
+            int ih = h - 2 * thickness;
+            if (ih > 0 && innerRad > 0) {
+                if (iy < innerRad || iy >= ih - innerRad) {
+                    innerInset = CornerInsetF(iy, ih, innerRad);
+                }
             }
-            SurfaceFill(xL, y0 + y, xL + tw, y0 + y + 1, packedRgba);
-            SurfaceFill(xR - tw, y0 + y, xR, y0 + y + 1, packedRgba);
+            innerL = (float)(x0 + thickness) + innerInset;
+            innerRgt = (float)(x0 + w - thickness) - innerInset;
+            if (innerL > left) {
+                FillSpanSoft(y0 + y, left, innerL, rgb);
+            }
+            if (right > innerRgt) {
+                FillSpanSoft(y0 + y, innerRgt, right, rgb);
+            }
         }
     }
 }

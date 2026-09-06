@@ -195,6 +195,9 @@ static void ApplyFile(const char *path, OverlayTheme *out)
         }
     }
     out->borderWidth = LookupFrameBorderWidth(text);
+    if (out->borderWidth < 2) {
+        out->borderWidth = 2;
+    }
     free(text);
 }
 
@@ -209,7 +212,7 @@ void OverlayTheme_Load(OverlayTheme *out)
     out->mutedRgb = 0x98989D;
     out->accentRgb = 0x0A84FF;
     out->trackRgb = 0x3A3A3C;
-    out->borderWidth = 1;
+    out->borderWidth = 2;
 
     root = BgSwitch_GetGameRoot();
     if (root == NULL || root[0] == '\0') {

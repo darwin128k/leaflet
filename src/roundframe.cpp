@@ -118,6 +118,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define VGUI_DC_ARROW              2
 #define SLIDER_KNOB_RGB            0xF5F5F7u
 #define SLIDER_VALUE_INK_RGB       0x141416u
+#define SLIDER_KNOB_DOT            6
 #define SLIDER_VALUE_CAPSULE_W     44 /* fits "20.0" / "0.00" without resizing */
 #define SLIDER_VALUE_CAPSULE_H     16
 
@@ -1439,11 +1440,11 @@ static void DrawValueSlider(void *thisPtr)
                 knobY = 0;
             }
         }
-        DrawPillAt(knobX, knobY, capW, capH, SLIDER_KNOB_RGB);
+        DrawPillAt(knobX, knobY, capW, capH, g_theme.accentRgb);
         if (buf[0] != '\0') {
             int tx = knobX + (capW - tw) / 2;
             int ty = knobY + (capH - 10) / 2;
-            DrawValueGlyphs(tx, ty, buf, ThemeRgbPacked(SLIDER_VALUE_INK_RGB));
+            DrawValueGlyphs(tx, ty, buf, ThemeRgbPacked(SLIDER_KNOB_RGB));
         }
     } else {
         knobX = cx - knob / 2;
@@ -1455,6 +1456,9 @@ static void DrawValueSlider(void *thisPtr)
             knobY = 0;
         }
         DrawAaDisk(knobX, knobY, knob, SLIDER_KNOB_RGB, g_theme.windowRgb);
+        DrawAaDisk(knobX + (knob - SLIDER_KNOB_DOT) / 2,
+                   knobY + (knob - SLIDER_KNOB_DOT) / 2,
+                   SLIDER_KNOB_DOT, g_theme.accentRgb, SLIDER_KNOB_RGB);
     }
     UpdateSliderDragCursor(thisPtr, padX, w - padX, cx);
 }

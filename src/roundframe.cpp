@@ -3,6 +3,7 @@
 #include "log.h"
 #include "audioextra.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
@@ -78,12 +79,22 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_SLIDER_PAINT          0x00066e00u /* Slider::Paint — 4px nob in SliderFgColor */
 #define RVA_SLIDER_PAINTBG        0x000673d0u /* Slider::PaintBackground — Panel fill + groove + ticks */
 #define RVA_SLIDER_RECOMPUTENOB   0x00066a80u /* Slider::RecomputeNobPosFromValue */
+#define RVA_CCVARSLIDER_APPLY     0x00030450u /* CCvarSlider::ApplyChanges — this GameUI uses Cvar_SetValue */
+#define RVA_ENGINE                0x000C3C9Cu
+#define ENG_CLIENTCMD             20
 #define OFF_SLIDER_NOB0           0x74
 #define OFF_SLIDER_NOB1           0x78
 #define OFF_SLIDER_DRAGGING       0x71
 #define OFF_SLIDER_MIN            0x8C
 #define OFF_SLIDER_MAX            0x90
 #define OFF_SLIDER_VALUE          0x94
+#define OFF_SLIDER_NOBSIZE        0xA4 /* float _nobSize; stock 8, our knob is 16 */
+#define OFF_CCVAR_MODIFIED        0xB7
+#define OFF_CCVAR_STARTF          0xB8
+#define OFF_CCVAR_STARTI          0xBC
+#define OFF_CCVAR_LASTI           0xC0
+#define OFF_CCVAR_CURF            0xC4
+#define OFF_CCVAR_NAME            0xC8
 #define RVA_CROSSHAIRIMAGE_PAINT  0x0003b010u /* CrosshairImagePanel::Paint — engine FillRGBA, no VGUI clip */
 #define OFF_PROGRESS              0x78 /* float 0..1; confirmed via fmul [esi+0x78] in PaintBackground */
 
@@ -119,6 +130,7 @@ static PaintFn g_origFramePaintBgAlt = NULL;
 static PaintFn g_origProgressPaintBg = NULL;
 static PaintFn g_origSliderPaint = NULL;
 static PaintFn g_origSliderPaintBg = NULL;
+static PaintFn g_origCvarSliderApply = NULL;
 static PaintFn g_origCrosshairPaint = NULL;
 static BYTE g_panelPaintBgTramp[32];
 static BYTE g_buttonPaintTramp[32];
@@ -130,6 +142,7 @@ static BYTE g_framePaintBgAltTramp[32];
 static BYTE g_progressPaintBgTramp[32];
 static BYTE g_sliderPaintTramp[32];
 static BYTE g_sliderPaintBgTramp[32];
+static BYTE g_cvarSliderApplyTramp[32];
 static BYTE g_crosshairPaintTramp[32];
 static BYTE g_titlePlaceTramp[32];
 
@@ -458,6 +471,125 @@ static int IsOptionsSlider(void *thisPtr)
     vt = *(void **)thisPtr;
     return vt == (void *)(g_gameUiBase + RVA_SLIDER_VTABLE)
         || vt == (void *)(g_gameUiBase + RVA_CCVARSLIDER_VTABLE);
+}
+
+static int IsCvarSlider(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_CCVARSLIDER_VTABLE);
+}
+
+/* Stock CCvarSlider range is min/max * 100. This GameUI then writes the
+ * float with Cvar_SetValue, so host_writeconfig dumps "%f" junk (3.020000).
+ * NextClient formats "%.2f" via Cvar_Set; GoldSrc mouse UI shows "%.1f".
+ * Snap the integer so a wide track still hits those steps, then write a
+ * short string through ClientCmd. */
+static int SliderStepFor(void *thisPtr)
+{
+    const char *name = PanelName(thisPtr);
+    if (lstrcmpiA(name, "Slider") == 0) {
+        return 10;
+    }
+    return 1;
+}
+
+static void SnapCvarSlider(void *thisPtr)
+{
+    int minv;
+    int maxv;
+    int val;
+    int step;
+    int q;
+    if (!IsCvarSlider(thisPtr) || IsBadWritePtr((char *)thisPtr + OFF_SLIDER_VALUE, 4)) {
+        return;
+    }
+    minv = *(int *)((char *)thisPtr + OFF_SLIDER_MIN);
+    maxv = *(int *)((char *)thisPtr + OFF_SLIDER_MAX);
+    val = *(int *)((char *)thisPtr + OFF_SLIDER_VALUE);
+    step = SliderStepFor(thisPtr);
+    if (step < 1) {
+        step = 1;
+    }
+    q = val;
+    if (q >= 0) {
+        q = (q + step / 2) / step * step;
+    } else {
+        q = -(((-q) + step / 2) / step * step);
+    }
+    if (q < minv) {
+        q = minv;
+    }
+    if (q > maxv) {
+        q = maxv;
+    }
+    *(int *)((char *)thisPtr + OFF_SLIDER_VALUE) = q;
+    if (!IsBadWritePtr((char *)thisPtr + OFF_SLIDER_NOBSIZE, 4)) {
+        *(float *)((char *)thisPtr + OFF_SLIDER_NOBSIZE) = 16.0f;
+    }
+}
+
+static void EngineClientCmd(const char *cmd)
+{
+    void **eng;
+    typedef void (*ClientCmdFn)(const char *c);
+    ClientCmdFn fn;
+    if (g_gameUiBase == NULL || cmd == NULL || cmd[0] == '\0') {
+        return;
+    }
+    if (IsBadReadPtr(g_gameUiBase + RVA_ENGINE, sizeof(void *))) {
+        return;
+    }
+    eng = *(void ***)(g_gameUiBase + RVA_ENGINE);
+    if (eng == NULL || IsBadReadPtr(eng, (ENG_CLIENTCMD + 1) * sizeof(void *))) {
+        return;
+    }
+    fn = (ClientCmdFn)eng[ENG_CLIENTCMD];
+    if (fn == NULL) {
+        return;
+    }
+    __try {
+        fn(cmd);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static void __fastcall CvarSliderApply_Hook(void *thisPtr)
+{
+    int ival;
+    int step;
+    float f;
+    char num[32];
+    char cmd[96];
+    const char *cvar;
+    if (thisPtr == NULL || IsBadReadPtr((char *)thisPtr + OFF_CCVAR_MODIFIED, 1)) {
+        return;
+    }
+    if (*((unsigned char *)thisPtr + OFF_CCVAR_MODIFIED) == 0) {
+        return;
+    }
+    SnapCvarSlider(thisPtr);
+    ival = *(int *)((char *)thisPtr + OFF_SLIDER_VALUE);
+    *(int *)((char *)thisPtr + OFF_CCVAR_STARTI) = ival;
+    *(int *)((char *)thisPtr + OFF_CCVAR_LASTI) = ival;
+    f = (float)ival / 100.0f;
+    *(float *)((char *)thisPtr + OFF_CCVAR_STARTF) = f;
+    *(float *)((char *)thisPtr + OFF_CCVAR_CURF) = f;
+    cvar = (const char *)thisPtr + OFF_CCVAR_NAME;
+    if (IsBadReadPtr(cvar, 2) || cvar[0] == '\0') {
+        return;
+    }
+    step = SliderStepFor(thisPtr);
+    if (step >= 10) {
+        _snprintf(num, sizeof(num), "%.1f", f);
+    } else {
+        _snprintf(num, sizeof(num), "%.2f", f);
+    }
+    _snprintf(cmd, sizeof(cmd), "%s %s", cvar, num);
+    EngineClientCmd(cmd);
 }
 
 static int IsTitleCloseButton(void *thisPtr)
@@ -2001,6 +2133,7 @@ static void __fastcall SliderPaintBg_Hook(void *thisPtr)
 static void __fastcall SliderPaint_Hook(void *thisPtr)
 {
     AudioExtra_OnSliderPaint(thisPtr);
+    SnapCvarSlider(thisPtr);
     DrawValueSlider(thisPtr);
 }
 
@@ -2241,6 +2374,14 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
         InstallNearHook(base + RVA_SLIDER_PAINT, 8, kSliderPaintPrologue,
                         g_sliderPaintTramp, sizeof(g_sliderPaintTramp),
                         (void *)SliderPaint_Hook, &g_origSliderPaint, "SliderPaint");
+    }
+    {
+        static const BYTE kCvarApplyPrologue[10] = {
+            0x51, 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xB7, 0x00, 0x00, 0x00
+        };
+        InstallNearHook(base + RVA_CCVARSLIDER_APPLY, 10, kCvarApplyPrologue,
+                        g_cvarSliderApplyTramp, sizeof(g_cvarSliderApplyTramp),
+                        (void *)CvarSliderApply_Hook, &g_origCvarSliderApply, "CCvarSliderApplyChanges");
     }
     {
         static const BYTE kSliderBgPrologue[6] = { 0x83, 0xEC, 0x14, 0x53, 0x56, 0x57 };

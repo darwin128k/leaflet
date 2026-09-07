@@ -444,7 +444,7 @@ static void FitAudioPage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
     const int rowH = OPTIONS_TOGGLE_ROW_H;
-    const int sliderH = 36;
+    const int sliderH = 48;
     const int labelH = 20;
     int colW;
     int leftX;
@@ -550,10 +550,10 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     }
     if (tx != NULL) {
         g_SetPos(tx, leftX, y);
-        g_SetSize(tx, colW, 40);
+        g_SetSize(tx, colW, 48);
     }
-    LayoutNamed(page, "VoiceReceive", rightX, y, colW, 40);
-    y += 50;
+    LayoutNamed(page, "VoiceReceive", rightX, y, colW, 48);
+    y += 56;
     LayoutNamedAll(page, "MicMeter", leftX, y, colW, 32);
     y += 40;
     LayoutNamed(page, "TestMicrophone", leftX, y, 160, 24);
@@ -758,8 +758,8 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
             int h = 0, w = 0;
             int y = y0 + 7 * rowStep + 8;
             g_GetSize(slider, &w, &h);
-            if (h <= 0) {
-                h = 40;
+            if (h < 50) {
+                h = 50;
             }
             g_SetPos(slider, pad, y + 24);
             g_SetSize(slider, pageW - pad * 2, h);

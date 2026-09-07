@@ -1065,6 +1065,105 @@ static void DrawToggleSwitch(void *thisPtr)
                0xF5F5F7u, trackRgb);
 }
 
+/* Same SurfaceFill path as the track — no ISurface text (that crashed).
+ * 3x5 glyphs, 2px cells. */
+static const unsigned char kDigit5[10][5] = {
+    { 0x7, 0x5, 0x5, 0x5, 0x7 },
+    { 0x2, 0x6, 0x2, 0x2, 0x7 },
+    { 0x7, 0x1, 0x7, 0x4, 0x7 },
+    { 0x7, 0x1, 0x7, 0x1, 0x7 },
+    { 0x5, 0x5, 0x7, 0x1, 0x1 },
+    { 0x7, 0x4, 0x7, 0x1, 0x7 },
+    { 0x7, 0x4, 0x7, 0x5, 0x7 },
+    { 0x7, 0x1, 0x1, 0x1, 0x1 },
+    { 0x7, 0x5, 0x7, 0x5, 0x7 },
+    { 0x7, 0x5, 0x7, 0x1, 0x7 }
+};
+
+static void DrawGlyphRow(int x, int y, unsigned char bits, unsigned int packed)
+{
+    int col;
+    for (col = 0; col < 3; col++) {
+        if ((bits & (1 << (2 - col))) != 0) {
+            SurfaceFill(x + col * 2, y, x + col * 2 + 2, y + 2, packed);
+        }
+    }
+}
+
+static int DrawValueGlyphs(int x, int y, const char *text)
+{
+    unsigned int packed = ThemeRgbPacked(0xF5F5F7u);
+    int cx = x;
+    int i;
+    for (i = 0; text[i] != '\0'; i++) {
+        if (text[i] == '.') {
+            SurfaceFill(cx + 1, y + 8, cx + 3, y + 10, packed);
+            cx += 4;
+        } else if (text[i] >= '0' && text[i] <= '9') {
+            int row;
+            const unsigned char *g = kDigit5[text[i] - '0'];
+            for (row = 0; row < 5; row++) {
+                DrawGlyphRow(cx, y + row * 2, g[row], packed);
+            }
+            cx += 8;
+        }
+    }
+    return cx - x;
+}
+
+static void DrawSliderDragValue(void *thisPtr, int cx, int knobBottom, int panelH)
+{
+    char buf[16];
+    int minv;
+    int maxv;
+    int val;
+    float f;
+    int tw;
+    int tx;
+    int ty;
+    if (thisPtr == NULL) {
+        return;
+    }
+    if (IsBadReadPtr((char *)thisPtr + OFF_SLIDER_DRAGGING, 1)
+        || *((unsigned char *)thisPtr + OFF_SLIDER_DRAGGING) == 0) {
+        return;
+    }
+    minv = *(int *)((char *)thisPtr + OFF_SLIDER_MIN);
+    maxv = *(int *)((char *)thisPtr + OFF_SLIDER_MAX);
+    val = *(int *)((char *)thisPtr + OFF_SLIDER_VALUE);
+    if (IsCvarSlider(thisPtr)) {
+        f = (float)val / 100.0f;
+        if (SliderStepFor(thisPtr) >= 10) {
+            _snprintf(buf, sizeof(buf), "%.1f", f);
+        } else {
+            _snprintf(buf, sizeof(buf), "%.2f", f);
+        }
+    } else if (minv == 0 && maxv == 100) {
+        _snprintf(buf, sizeof(buf), "%.2f", (float)val / 100.0f);
+    } else {
+        _snprintf(buf, sizeof(buf), "%d", val);
+    }
+    tw = 0;
+    {
+        int i;
+        for (i = 0; buf[i] != '\0'; i++) {
+            tw += (buf[i] == '.') ? 4 : 8;
+        }
+    }
+    tx = cx - tw / 2;
+    if (tx < 0) {
+        tx = 0;
+    }
+    ty = knobBottom + 4;
+    if (ty + 10 > panelH) {
+        ty = knobBottom - 12;
+        if (ty < 0) {
+            ty = 0;
+        }
+    }
+    DrawValueGlyphs(tx, ty, buf);
+}
+
 static void DrawValueSlider(void *thisPtr)
 {
     int w = 0;
@@ -1192,36 +1291,7 @@ static void DrawValueSlider(void *thisPtr)
         knobY = 0;
     }
     DrawAaDisk(knobX, knobY, knob, 0xF5F5F7u, g_theme.windowRgb);
-    if (g_dragValueLabel != NULL && g_SetPos != NULL && g_GetPos != NULL
-        && lstrcmpiA(PanelName(thisPtr), "Slider") == 0) {
-        unsigned char dragging = *(unsigned char *)((char *)thisPtr + OFF_SLIDER_DRAGGING);
-        if (dragging) {
-            int sx = 0;
-            int sy = 0;
-            int dummyW = 0;
-            int lh = 0;
-            int px;
-            int py;
-            g_GetPos(thisPtr, &sx, &sy);
-            g_GetSize(g_dragValueLabel, &dummyW, &lh);
-            if (lh <= 0) {
-                lh = 20;
-            }
-            if (g_SetSize != NULL) {
-                g_SetSize(g_dragValueLabel, 32, lh);
-            }
-            /* TextEntry is west-aligned with a few px inset, so lw/2
-             * parks the glyphs left of the knob. */
-            px = sx + cx - 16;
-            py = sy + trackY + trackH + 4;
-            if (px < 0) {
-                px = 0;
-            }
-            g_SetPos(g_dragValueLabel, px, py);
-        } else {
-            g_SetPos(g_dragValueLabel, g_dragValueRestX, g_dragValueRestY);
-        }
-    }
+    DrawSliderDragValue(thisPtr, cx, knobY + knob, h);
 }
 
 void RoundFrame_SetDragValueLabel(void *label, int restX, int restY)

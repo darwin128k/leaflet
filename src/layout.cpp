@@ -3,6 +3,7 @@
 #include "bgswitch.h"
 #include "roundframe.h"
 #include "prefetch.h"
+#include "audioextra.h"
 #include <math.h>
 #include <string.h>
 
@@ -405,6 +406,65 @@ static void LayoutNamedAll(void *page, const char *name, int x, int y, int w, in
     }
 }
 
+static void FitAudioPage(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    const int rowH = OPTIONS_TOGGLE_ROW_H;
+    const int sliderH = 36;
+    const int labelH = 20;
+    int colW;
+    int leftX;
+    int rightX;
+    int y;
+    int rightY;
+    if (page == NULL || LayoutFindChild(page, "SFX Slider") == NULL) {
+        return;
+    }
+    colW = (pageW - pad * 3) / 2;
+    if (colW < 160) {
+        colW = pageW - pad * 2;
+    }
+    leftX = pad;
+    rightX = pad + colW + pad;
+    if (rightX + 80 > pageW) {
+        rightX = pad;
+    }
+
+    y = pad;
+    LayoutNamed(page, "sfx label", leftX, y, colW, labelH);
+    y += 22;
+    LayoutNamed(page, "SFX Slider", leftX, y, colW, sliderH);
+    y += sliderH + 8;
+    LayoutNamed(page, "mp3 label", leftX, y, colW, labelH);
+    y += 22;
+    LayoutNamed(page, "MP3 Volume", leftX, y, colW, sliderH);
+
+    rightY = pad;
+    LayoutNamed(page, "Label1", rightX, rightY, colW, labelH);
+    rightY += 22;
+    LayoutNamed(page, "Sound Quality", rightX, rightY, colW, 24);
+    rightY += 32;
+    LayoutNamed(page, "OpenAL Label", rightX, rightY, colW, labelH);
+    rightY += 22;
+    LayoutNamed(page, "al_occlusion", rightX, rightY, colW, rowH);
+    rightY += rowH + 6;
+    LayoutNamed(page, "al_occlusion_fade", rightX, rightY, colW, rowH);
+    rightY += rowH + 6;
+    LayoutNamed(page, "al_resample_all", rightX, rightY, colW, rowH);
+    rightY += rowH + 6;
+    LayoutNamed(page, "al_doppler", rightX, rightY, colW, rowH);
+    rightY += rowH + 6;
+    LayoutNamed(page, "al_xfi_workaround", rightX, rightY, colW, rowH);
+    rightY += rowH + 6;
+    LayoutNamed(page, "al_clamping_mode", rightX, rightY, colW, rowH);
+
+    LayoutNamed(page, "MilesAudioLabel", -4000, -4000, 1, 1);
+    LayoutNamed(page, "suit label", -4000, -4000, 1, 1);
+    LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
+
+    AudioExtra_BindPage(page);
+}
+
 static void FitVoicePage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
@@ -666,6 +726,7 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         FitVoicePage(page, pageW, pageH);
     }
     FitVideoPage(page, pageW, pageH);
+    FitAudioPage(page, pageW, pageH);
 }
 
 /* COptionsDialog::COptionsDialog (RVA 0x377c0) -- found via RTTI/xref to the
@@ -764,6 +825,7 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     PatchOptionsDialogSize(base);
     RoundFrame_Init(hOriginalGameUI);
     Prefetch_Bind(hOriginalGameUI);
+    AudioExtra_Init(hOriginalGameUI);
 }
 
 void LayoutHook_Tick(void)
@@ -774,6 +836,7 @@ void LayoutHook_Tick(void)
         && last != 0 && now - last > 400) {
         InterlockedExchange(&g_hideGameMenuForConnect, 0);
     }
+    AudioExtra_Tick();
 }
 
 static int ItemIsVisible(void *item)

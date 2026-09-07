@@ -1,6 +1,7 @@
 #include "roundframe.h"
 #include "scheme.h"
 #include "log.h"
+#include "audioextra.h"
 #include <math.h>
 #include <string.h>
 
@@ -810,6 +811,19 @@ static int IsVoiceToggleName(const char *name)
         || lstrcmpiA(name, "MicBoost") == 0;
 }
 
+static int IsAudioToggleName(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    return lstrcmpiA(name, "al_occlusion") == 0
+        || lstrcmpiA(name, "al_occlusion_fade") == 0
+        || lstrcmpiA(name, "al_resample_all") == 0
+        || lstrcmpiA(name, "al_doppler") == 0
+        || lstrcmpiA(name, "al_xfi_workaround") == 0
+        || lstrcmpiA(name, "al_clamping_mode") == 0;
+}
+
 static int IsSettingsToggle(void *thisPtr)
 {
     return lstrcmpiA(PanelName(thisPtr), "CrosshairTranslucencyCheckbox") == 0;
@@ -831,6 +845,7 @@ static int IsCvarToggleRow(void *thisPtr)
         && !IsMouseToggleName(name)
         && !IsVideoToggleName(name)
         && !IsVoiceToggleName(name)
+        && !IsAudioToggleName(name)
         && !IsSettingsToggle(thisPtr)) {
         return 0;
     }
@@ -1058,6 +1073,10 @@ static void PaintCvarToggleRow(void *thisPtr)
     SetImageAtIndexFn setImage;
     int w = 0, h = 0;
     void *textImg;
+
+    if (IsAudioToggleName(PanelName(thisPtr))) {
+        AudioExtra_SyncToggle(thisPtr);
+    }
 
     vtable = *(void ***)thisPtr;
     setAlign = (SetIntFn)vtable[OFF_BUTTON_SETCONTENTALIGNMENT_VT / sizeof(void *)];

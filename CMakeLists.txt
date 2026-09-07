@@ -32,6 +32,7 @@ set(LEAFLET_SOURCES
     src/log.cpp
     src/bgswitch.cpp
     src/roundframe.cpp
+    src/audioextra.cpp
     src/scheme.cpp
     src/prefetch.cpp
     src/overlay.cpp

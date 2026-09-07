@@ -645,12 +645,17 @@ static void __fastcall CvarSliderApply_Hook(void *thisPtr)
         return;
     }
     SnapCvarSlider(thisPtr);
+    /* Stock Apply writes the cvar immediately (Cvar_SetValue) and clears
+     * the dirty flag. Skipping it left Apply armed and Paint read the old
+     * cvar for one frame, so the knob jumped and needed a second click. */
+    if (g_origCvarSliderApply != NULL) {
+        g_origCvarSliderApply(thisPtr);
+    }
+    if (IsBadReadPtr((char *)thisPtr + OFF_SLIDER_VALUE, 4)) {
+        return;
+    }
     ival = *(int *)((char *)thisPtr + OFF_SLIDER_VALUE);
-    *(int *)((char *)thisPtr + OFF_CCVAR_STARTI) = ival;
-    *(int *)((char *)thisPtr + OFF_CCVAR_LASTI) = ival;
     f = (float)ival / 100.0f;
-    *(float *)((char *)thisPtr + OFF_CCVAR_STARTF) = f;
-    *(float *)((char *)thisPtr + OFF_CCVAR_CURF) = f;
     cvar = CvarSliderCvarName(thisPtr);
     if (cvar[0] == '\0') {
         return;

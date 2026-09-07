@@ -382,6 +382,40 @@ static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h
     }
 }
 
+/* Volume captions share one left edge; scheme Label inset is 6px and
+ * associate/hot-key images shift some tokens (SFX vs MP3) off that line. */
+#define LABEL_SETTEXTINSET_VT 0x230
+#define LABEL_SETCONTENTALIGNMENT_VT 0x22c
+#define LABEL_ALIGN_WEST 3
+
+static void LayoutCaption(void *page, const char *name, int x, int y, int w, int h)
+{
+    void *c;
+    void **vt;
+    SetTextInsetFn setInset;
+    SetIntFn setAlign;
+    c = LayoutFindChild(page, name);
+    if (c == NULL) {
+        return;
+    }
+    g_SetPos(c, x, y);
+    if (w > 0 && h > 0) {
+        g_SetSize(c, w, h);
+    }
+    vt = *(void ***)c;
+    if (vt == NULL) {
+        return;
+    }
+    setInset = (SetTextInsetFn)vt[LABEL_SETTEXTINSET_VT / sizeof(void *)];
+    if (setInset != NULL) {
+        setInset(c, 0, 0);
+    }
+    setAlign = (SetIntFn)vt[LABEL_SETCONTENTALIGNMENT_VT / sizeof(void *)];
+    if (setAlign != NULL) {
+        setAlign(c, LABEL_ALIGN_WEST);
+    }
+}
+
 static void LayoutNamedAll(void *page, const char *name, int x, int y, int w, int h)
 {
     int n;
@@ -431,13 +465,23 @@ static void FitAudioPage(void *page, int pageW, int pageH)
     }
 
     y = pad;
-    LayoutNamed(page, "sfx label", leftX, y, colW, labelH);
+    LayoutCaption(page, "sfx label", leftX, y, colW, labelH);
     y += 22;
     LayoutNamed(page, "SFX Slider", leftX, y, colW, sliderH);
     y += sliderH + 8;
-    LayoutNamed(page, "mp3 label", leftX, y, colW, labelH);
+    LayoutCaption(page, "mp3 label", leftX, y, colW, labelH);
     y += 22;
     LayoutNamed(page, "MP3 Volume", leftX, y, colW, sliderH);
+    if (AudioExtra_HasMetaAudio()) {
+        AudioExtra_EnsureDopplerSlider(page);
+        y += sliderH + 8;
+        LayoutCaption(page, "al_doppler_label", leftX, y, colW, labelH);
+        y += 22;
+        LayoutNamed(page, "Suit Slider", leftX, y, colW, sliderH);
+    } else {
+        LayoutNamed(page, "al_doppler_label", -4000, -4000, 1, 1);
+        LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
+    }
 
     rightY = pad;
     LayoutNamed(page, "hisound", rightX, rightY, colW, rowH);
@@ -449,8 +493,6 @@ static void FitAudioPage(void *page, int pageW, int pageH)
         rightY += rowH + 6;
         LayoutNamed(page, "al_resample_all", rightX, rightY, colW, rowH);
         rightY += rowH + 6;
-        LayoutNamed(page, "al_doppler", rightX, rightY, colW, rowH);
-        rightY += rowH + 6;
         LayoutNamed(page, "al_xfi_workaround", rightX, rightY, colW, rowH);
         rightY += rowH + 6;
         LayoutNamed(page, "al_clamping_mode", rightX, rightY, colW, rowH);
@@ -458,7 +500,6 @@ static void FitAudioPage(void *page, int pageW, int pageH)
         LayoutNamed(page, "al_occlusion", -4000, -4000, 1, 1);
         LayoutNamed(page, "al_occlusion_fade", -4000, -4000, 1, 1);
         LayoutNamed(page, "al_resample_all", -4000, -4000, 1, 1);
-        LayoutNamed(page, "al_doppler", -4000, -4000, 1, 1);
         LayoutNamed(page, "al_xfi_workaround", -4000, -4000, 1, 1);
         LayoutNamed(page, "al_clamping_mode", -4000, -4000, 1, 1);
     }
@@ -469,7 +510,9 @@ static void FitAudioPage(void *page, int pageW, int pageH)
     LayoutNamed(page, "Sound Quality", -4000, -4000, 1, 1);
     LayoutNamed(page, "Label1", -4000, -4000, 1, 1);
     LayoutNamed(page, "suit label", -4000, -4000, 1, 1);
-    LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
+    if (!AudioExtra_HasMetaAudio()) {
+        LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
+    }
 
     AudioExtra_BindPage(page);
 }

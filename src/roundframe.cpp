@@ -820,7 +820,6 @@ static int IsAudioToggleName(const char *name)
         || lstrcmpiA(name, "al_occlusion") == 0
         || lstrcmpiA(name, "al_occlusion_fade") == 0
         || lstrcmpiA(name, "al_resample_all") == 0
-        || lstrcmpiA(name, "al_doppler") == 0
         || lstrcmpiA(name, "al_xfi_workaround") == 0
         || lstrcmpiA(name, "al_clamping_mode") == 0;
 }
@@ -2001,6 +2000,7 @@ static void __fastcall SliderPaintBg_Hook(void *thisPtr)
 
 static void __fastcall SliderPaint_Hook(void *thisPtr)
 {
+    AudioExtra_OnSliderPaint(thisPtr);
     DrawValueSlider(thisPtr);
 }
 

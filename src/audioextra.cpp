@@ -59,9 +59,11 @@ static PaintFn g_origCvarSliderPaint = NULL;
 static void *g_audioPage = NULL;
 static unsigned char g_seeded[TOGGLE_COUNT];
 static unsigned char g_lastUi[TOGGLE_COUNT];
+static void *g_toggleBtn[TOGGLE_COUNT];
 static int g_dopplerSeeded = 0;
 static int g_lastDoppler = -1;
 static int g_dopplerDirty = 0;
+static void *g_dopplerSlider = NULL;
 
 static void **EngineTable(void)
 {
@@ -299,10 +301,12 @@ void AudioExtra_OnSliderPaint(void *slider)
     if (want > maxv) {
         want = maxv;
     }
-    if (!g_dopplerSeeded) {
+    if (g_dopplerSlider != slider) {
         *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
         g_lastDoppler = want;
+        g_dopplerDirty = 0;
         g_dopplerSeeded = 1;
+        g_dopplerSlider = slider;
         return;
     }
     dragging = 0;
@@ -337,9 +341,11 @@ void AudioExtra_Init(HMODULE hGameUI)
 {
     memset(g_seeded, 0, sizeof(g_seeded));
     memset(g_lastUi, 0, sizeof(g_lastUi));
+    memset(g_toggleBtn, 0, sizeof(g_toggleBtn));
     g_dopplerSeeded = 0;
     g_lastDoppler = -1;
     g_dopplerDirty = 0;
+    g_dopplerSlider = NULL;
     g_audioPage = NULL;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
@@ -383,10 +389,14 @@ void AudioExtra_SyncToggle(void *btn)
             return;
         }
         engOn = CvarGet(kToggles[i].cvar) > 0.01f;
-        if (!g_seeded[i]) {
+        /* A new Options dialog allocates new check buttons (all off). If we
+         * still think the last dialog's "on" was the UI, paint would write
+         * hisound 0 the moment you reopen. Seed from the engine instead. */
+        if (!g_seeded[i] || g_toggleBtn[i] != btn) {
             WriteSelected(btn, engOn);
             g_lastUi[i] = (unsigned char)engOn;
             g_seeded[i] = 1;
+            g_toggleBtn[i] = btn;
             if (i == 0) {
                 SyncHiddenQualityCombo(engOn);
             }

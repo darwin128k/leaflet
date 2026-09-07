@@ -1598,6 +1598,13 @@ static void EnsureSurfaceHooks(void)
     if (vt == NULL) {
         return;
     }
+    /* Video restart re-inits GameUI but vgui2.dll can stay mapped. Do not
+     * take our own hooks as "original" — that recurses until the process dies. */
+    if (vt[SURF_VT_DRAWSETCOLOR / sizeof(void *)] == (void *)DrawSetColor_Hook
+        || vt[SURF_VT_DRAWFILLEDRECT / sizeof(void *)] == (void *)DrawFilledRect_Hook) {
+        g_surfaceHooked = 1;
+        return;
+    }
     g_origDrawSetColor = (SurfDrawSetColorFn)vt[SURF_VT_DRAWSETCOLOR / sizeof(void *)];
     g_origDrawFilledRect = (SurfDrawFilledRectFn)vt[SURF_VT_DRAWFILLEDRECT / sizeof(void *)];
     if (g_origDrawSetColor == NULL || g_origDrawFilledRect == NULL) {

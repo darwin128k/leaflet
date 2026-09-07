@@ -9,10 +9,12 @@ typedef char(__thiscall *IsSelectedFn)(void *self);
 typedef void *(*GetCvarPointerFn)(const char *name);
 typedef float (*GetCvarFloatFn)(const char *name);
 typedef void (*CvarSetValueFn)(const char *name, float value);
+typedef void(__thiscall *ComboActivateFn)(void *self, int index);
 
 #define RVA_FINDCHILDBYNAME 0x00044100u
 #define RVA_SETPOS          0x000436f0u
 #define RVA_ENGINE          0x000C3C9Cu /* cl_enginefunc_t *engine; CCvarSlider::Paint mov ecx,[imm] */
+#define RVA_COMBO_ACTIVATE  0x00031310u /* CLabeledCommandComboBox::ActivateItem(int) */
 #define OFF_SETVISIBLE_VT   0x70
 #define OFF_BUTTON_ISSELECTED_VT 0x2b8
 #define OFF_PANEL_NAME      0x44
@@ -27,6 +29,7 @@ typedef struct {
 } AudioToggle;
 
 static const AudioToggle kToggles[] = {
+    { "hisound", "hisound", 1.0f },
     { "al_occlusion", "al_occlusion", 1.0f },
     { "al_occlusion_fade", "al_occlusion_fade", 1.0f },
     { "al_resample_all", "al_resample_all", 1.0f },
@@ -40,6 +43,8 @@ static const AudioToggle kToggles[] = {
 static BYTE *g_gameUiBase = NULL;
 static FindChildByNameFn g_FindChild = NULL;
 static SetPosFn g_SetPos = NULL;
+static ComboActivateFn g_ComboActivate = NULL;
+static void *g_audioPage = NULL;
 static unsigned char g_seeded[TOGGLE_COUNT];
 static unsigned char g_lastUi[TOGGLE_COUNT];
 
@@ -215,18 +220,41 @@ static void HideNamed(void *page, const char *name)
     }
 }
 
+static void SyncHiddenQualityCombo(int highOn)
+{
+    void *combo;
+    static const BYTE kPrologue[8] = { 0x56, 0x8B, 0xF1, 0x57, 0x8B, 0x7C, 0x24, 0x0C };
+    if (g_audioPage == NULL || g_ComboActivate == NULL) {
+        return;
+    }
+    if (memcmp((const BYTE *)g_ComboActivate, kPrologue, sizeof(kPrologue)) != 0) {
+        return;
+    }
+    combo = FindChild(g_audioPage, "Sound Quality");
+    if (combo == NULL) {
+        return;
+    }
+    __try {
+        g_ComboActivate(combo, highOn ? 0 : 1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 void AudioExtra_Init(HMODULE hGameUI)
 {
     memset(g_seeded, 0, sizeof(g_seeded));
     memset(g_lastUi, 0, sizeof(g_lastUi));
+    g_audioPage = NULL;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
     g_SetPos = NULL;
+    g_ComboActivate = NULL;
     if (hGameUI == NULL) {
         return;
     }
     g_FindChild = (FindChildByNameFn)(g_gameUiBase + RVA_FINDCHILDBYNAME);
     g_SetPos = (SetPosFn)(g_gameUiBase + RVA_SETPOS);
+    g_ComboActivate = (ComboActivateFn)(g_gameUiBase + RVA_COMBO_ACTIVATE);
 }
 
 void AudioExtra_SyncToggle(void *btn)
@@ -251,15 +279,24 @@ void AudioExtra_SyncToggle(void *btn)
             WriteSelected(btn, engOn);
             g_lastUi[i] = (unsigned char)engOn;
             g_seeded[i] = 1;
+            if (i == 0) {
+                SyncHiddenQualityCombo(engOn);
+            }
             return;
         }
         ui = ReadSelected(btn);
         if (ui != (int)g_lastUi[i]) {
             CvarSet(kToggles[i].cvar, ui ? kToggles[i].onValue : 0.0f);
             g_lastUi[i] = (unsigned char)ui;
+            if (lstrcmpiA(kToggles[i].field, "hisound") == 0) {
+                SyncHiddenQualityCombo(ui);
+            }
         } else if (engOn != (int)g_lastUi[i]) {
             WriteSelected(btn, engOn);
             g_lastUi[i] = (unsigned char)engOn;
+            if (i == 0) {
+                SyncHiddenQualityCombo(engOn);
+            }
         }
         return;
     }
@@ -274,8 +311,25 @@ void AudioExtra_BindPage(void *audioPage)
         HideNamed(audioPage, "MilesAudioLabel");
         HideNamed(audioPage, "EAX");
         HideNamed(audioPage, "A3D");
+        HideNamed(audioPage, "Sound Quality");
+        HideNamed(audioPage, "Label1");
+        HideNamed(audioPage, "OpenAL Label");
+        g_audioPage = audioPage;
+        if (!CvarExists("al_occlusion")) {
+            HideNamed(audioPage, "al_occlusion");
+            HideNamed(audioPage, "al_occlusion_fade");
+            HideNamed(audioPage, "al_resample_all");
+            HideNamed(audioPage, "al_doppler");
+            HideNamed(audioPage, "al_xfi_workaround");
+            HideNamed(audioPage, "al_clamping_mode");
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+}
+
+int AudioExtra_HasMetaAudio(void)
+{
+    return CvarExists("al_occlusion");
 }
 
 void AudioExtra_Tick(void)

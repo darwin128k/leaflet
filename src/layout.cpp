@@ -440,25 +440,34 @@ static void FitAudioPage(void *page, int pageW, int pageH)
     LayoutNamed(page, "MP3 Volume", leftX, y, colW, sliderH);
 
     rightY = pad;
-    LayoutNamed(page, "Label1", rightX, rightY, colW, labelH);
-    rightY += 22;
-    LayoutNamed(page, "Sound Quality", rightX, rightY, colW, 24);
-    rightY += 32;
-    LayoutNamed(page, "OpenAL Label", rightX, rightY, colW, labelH);
-    rightY += 22;
-    LayoutNamed(page, "al_occlusion", rightX, rightY, colW, rowH);
+    LayoutNamed(page, "hisound", rightX, rightY, colW, rowH);
     rightY += rowH + 6;
-    LayoutNamed(page, "al_occlusion_fade", rightX, rightY, colW, rowH);
-    rightY += rowH + 6;
-    LayoutNamed(page, "al_resample_all", rightX, rightY, colW, rowH);
-    rightY += rowH + 6;
-    LayoutNamed(page, "al_doppler", rightX, rightY, colW, rowH);
-    rightY += rowH + 6;
-    LayoutNamed(page, "al_xfi_workaround", rightX, rightY, colW, rowH);
-    rightY += rowH + 6;
-    LayoutNamed(page, "al_clamping_mode", rightX, rightY, colW, rowH);
+    if (AudioExtra_HasMetaAudio()) {
+        LayoutNamed(page, "al_occlusion", rightX, rightY, colW, rowH);
+        rightY += rowH + 6;
+        LayoutNamed(page, "al_occlusion_fade", rightX, rightY, colW, rowH);
+        rightY += rowH + 6;
+        LayoutNamed(page, "al_resample_all", rightX, rightY, colW, rowH);
+        rightY += rowH + 6;
+        LayoutNamed(page, "al_doppler", rightX, rightY, colW, rowH);
+        rightY += rowH + 6;
+        LayoutNamed(page, "al_xfi_workaround", rightX, rightY, colW, rowH);
+        rightY += rowH + 6;
+        LayoutNamed(page, "al_clamping_mode", rightX, rightY, colW, rowH);
+    } else {
+        LayoutNamed(page, "al_occlusion", -4000, -4000, 1, 1);
+        LayoutNamed(page, "al_occlusion_fade", -4000, -4000, 1, 1);
+        LayoutNamed(page, "al_resample_all", -4000, -4000, 1, 1);
+        LayoutNamed(page, "al_doppler", -4000, -4000, 1, 1);
+        LayoutNamed(page, "al_xfi_workaround", -4000, -4000, 1, 1);
+        LayoutNamed(page, "al_clamping_mode", -4000, -4000, 1, 1);
+    }
+
+    LayoutNamed(page, "OpenAL Label", -4000, -4000, 1, 1);
 
     LayoutNamed(page, "MilesAudioLabel", -4000, -4000, 1, 1);
+    LayoutNamed(page, "Sound Quality", -4000, -4000, 1, 1);
+    LayoutNamed(page, "Label1", -4000, -4000, 1, 1);
     LayoutNamed(page, "suit label", -4000, -4000, 1, 1);
     LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
 

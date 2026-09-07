@@ -816,7 +816,8 @@ static int IsAudioToggleName(const char *name)
     if (name == NULL || name[0] == '\0') {
         return 0;
     }
-    return lstrcmpiA(name, "al_occlusion") == 0
+    return lstrcmpiA(name, "hisound") == 0
+        || lstrcmpiA(name, "al_occlusion") == 0
         || lstrcmpiA(name, "al_occlusion_fade") == 0
         || lstrcmpiA(name, "al_resample_all") == 0
         || lstrcmpiA(name, "al_doppler") == 0

@@ -61,6 +61,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define COLOR_FG_WHITE            0xFFF7F5F5u /* r,g,b,a little-endian */
 #define COLOR_BG_TRANSPARENT      0x00000000u
 #define RVA_FRAME_PAINTBACKGROUND 0x0004cb60u /* Frame/PropertyDialog/MessageBox/COptionsDialog */
+#define VT_PAINTBACKGROUND_INDEX  106 /* PerformLayout is 111; five slots earlier */
 #define RVA_FRAME_TITLE_PLACE     0x0004cdb9u /* stock _title SetPos(0x1C,9) .. Paint */
 #define RVA_FRAME_TITLE_CONT      0x0004cde8u /* epilogue after title Paint */
 #define RVA_TEXTIMAGE_RESIZE      0x0004986fu /* TextImage::ResizeImageToContent */
@@ -364,6 +365,21 @@ static int NameIsOptionsTab(const char *name)
 
 static int NameContainsI(const char *hay, const char *needle);
 static int NameIsMenuChrome(const char *name);
+
+static int IsVguiFrame(void *thisPtr)
+{
+    void **vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void ***)thisPtr;
+    if (vt == NULL) {
+        return 0;
+    }
+    /* QueryBox/MessageBox keep Frame::PaintBackground. Vtable still points
+     * at the hooked RVA after InstallNearHook. */
+    return vt[VT_PAINTBACKGROUND_INDEX] == (void *)(g_gameUiBase + RVA_FRAME_PAINTBACKGROUND);
+}
 
 static int IsOptionsInnerChrome(void *thisPtr)
 {
@@ -1257,8 +1273,10 @@ static int ShouldRoundPanel(void *thisPtr)
         return 0;
     }
     /* Nested settings pages are Panels, not Frames. Rounding them draws
-     * the inner Voice/Mouse frame. Only named dialogs stay rounded. */
-    if (!NameContainsI(name, "Dialog") && !NameContainsI(name, "MessageBox")
+     * the inner Voice/Mouse frame. Frames stay rounded even when unnamed:
+     * QueryBox is Frame(parent, NULL) so PanelName is empty. */
+    if (!IsVguiFrame(thisPtr)
+        && !NameContainsI(name, "Dialog") && !NameContainsI(name, "MessageBox")
         && !NameContainsI(name, "QueryBox") && lstrcmpiA(name, "BaseQuestionPanel") != 0) {
         if (w >= 160 && h >= 100) {
             return 0;
@@ -1494,6 +1512,11 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
     if (rw <= 2 || rh <= 2) {
         return;
     }
+    /* ClientScheme ControlBG is 0-alpha (MOTD). Frame::PaintBackground still
+     * issues that fill; writing it would punch through our plate. */
+    if (((g_curColor >> 24) & 0xFFu) < 8) {
+        return;
+    }
     r = g_roundR;
     /* Dialog buttons: OK / Cancel / Apply / Advanced — same rounded plate
      * language as the prefetch card, not the square VGUI fill. */
@@ -1616,6 +1639,19 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
             g_roundR = isBtn ? 8 : RadiusForSize(w, h);
             g_roundActive = 1;
             g_edgeCaptured = 0;
+            if (!isBtn) {
+                /* QueryBox / MessageBox paint the client under the caption, not
+                 * a full-size rect. DrawFilledRect_Hook treats that as an inset
+                 * sheet and drops it — Quit had title+buttons and no plate.
+                 * Fill first so orig can still paint the title on top. */
+                DrawRoundedFillAt(0, 0, w, h, g_roundR,
+                                  ThemeRgbPacked(g_theme.windowRgb), 1, 1);
+                g_edgeCaptured = 1;
+                g_edgeX = 0;
+                g_edgeY = 0;
+                g_edgeRoundTop = 1;
+                g_edgeRoundBottom = 1;
+            }
             orig(thisPtr);
             g_roundActive = 0;
             g_roundIsButton = 0;
@@ -1628,15 +1664,10 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
                                                           : ThemeRgbPacked(g_theme.trackRgb);
                 DrawRoundedFillAt(px, py, w, h, 8, fill, 1, 1);
             } else {
-                if (g_edgeCaptured) {
-                    /* Orig already drew the rounded body and then the Frame
-                     * title. Refilling the interior here ate "Op" / "Q" after
-                     * disconnect, when ClientScheme made the body fill match
-                     * the panel and g_edgeCaptured flipped on. Stroke only. */
-                    DrawRoundedStrokeAt(g_edgeX, g_edgeY, w, h, g_roundR,
-                                        ThemeStrokePacked(), ThemeStrokeThickness(),
-                                        g_edgeRoundTop, g_edgeRoundBottom);
-                }
+                /* Do not refill after orig: that covered the Frame title. */
+                DrawRoundedStrokeAt(0, 0, w, h, g_roundR,
+                                    ThemeStrokePacked(), ThemeStrokeThickness(),
+                                    1, 1);
             }
             return;
         }
@@ -1691,6 +1722,14 @@ static void InstallNearHook(BYTE *target, unsigned stolen, const BYTE *expected,
 static void __fastcall PanelPaintBg_Hook(void *thisPtr)
 {
     int w = 0, h = 0;
+    /* Frame::PaintBackground calls this directly. Don't nest another
+     * rounded pass — the Frame hook already owns the plate. */
+    if (g_roundActive) {
+        if (g_origPanelPaintBg != NULL) {
+            g_origPanelPaintBg(thisPtr);
+        }
+        return;
+    }
     /* Labels keep scheme LabelBgColor (ControlBG, alpha 242) which reads
      * as a second grey box on the inner sheet. Skip the fill so static
      * text sits on the parent. */
@@ -1723,8 +1762,11 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
             int gameW = 0, gameH = 0;
             GameClientSize(&gameW, &gameH);
             if (!(gameW > 0 && w >= gameW - 8)
+                && !IsVguiFrame(thisPtr)
                 && !NameContainsI(nm, "Dialog")
                 && !NameContainsI(nm, "MessageBox")
+                && !NameContainsI(nm, "QueryBox")
+                && lstrcmpiA(nm, "BaseQuestionPanel") != 0
                 && !NameIsMenuChrome(nm)) {
                 return;
             }

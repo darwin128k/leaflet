@@ -29,6 +29,7 @@ typedef void(__thiscall *PaintFn)(void *self);
 #define OFF_SLIDER_MIN      0x8C
 #define OFF_SLIDER_MAX      0x90
 #define OFF_SLIDER_VALUE    0x94
+#define OFF_SLIDER_DRAGGING 0x71
 #define DOPPLER_SCALE       100.0f
 #define DOPPLER_MAX         2.0f
 
@@ -440,7 +441,13 @@ void AudioExtra_OnSliderPaint(void *slider)
     if (cur != g_lastDoppler) {
         CvarSet("al_doppler", (float)cur / DOPPLER_SCALE);
         g_lastDoppler = cur;
-    } else if (want != g_lastDoppler) {
+        return;
+    }
+    if (!IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)
+        && *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0) {
+        return;
+    }
+    if (want != g_lastDoppler) {
         *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
         g_lastDoppler = want;
     }

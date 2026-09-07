@@ -15,6 +15,7 @@ typedef void *(__cdecl *GetSurfaceFn)(void);
 typedef void(__thiscall *SurfDrawSetColorFn)(void *surf, unsigned int packedRgba);
 typedef void(__thiscall *SurfDrawFilledRectFn)(void *surf, int x0, int y0, int x1, int y1);
 typedef void(__thiscall *SurfGetScreenSizeFn)(void *surf, int *outWide, int *outTall);
+typedef void(__thiscall *SurfSetCursorFn)(void *surf, unsigned long cursor);
 typedef char(__thiscall *ByteGetterFn)(void *self);
 typedef void(__thiscall *SetPackedColorFn)(void *self, unsigned int packedRgba);
 typedef void(__thiscall *SetTwoColorsFn)(void *self, unsigned int packedFg, unsigned int packedBg);
@@ -112,6 +113,13 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define SURF_VT_DRAWSETCOLOR       0x1C
 #define SURF_VT_DRAWFILLEDRECT     0x24
 #define SURF_VT_GETSCREENSIZE      0x80 /* ISurface::GetScreenSize(int&,int&) — CrosshairImagePanel::UpdateCrosshair */
+#define SURF_VT_SETCURSOR          0xB4 /* ISurface::SetCursor; dc_none=1 dc_arrow=2 */
+#define VGUI_DC_NONE               1
+#define VGUI_DC_ARROW              2
+#define SLIDER_KNOB_RGB            0xF5F5F7u
+#define SLIDER_VALUE_INK_RGB       0x141416u
+#define SLIDER_VALUE_CAPSULE_W     44 /* fits "20.0" / "0.00" without resizing */
+#define SLIDER_VALUE_CAPSULE_H     16
 
 static BYTE *g_gameUiBase = NULL;
 static SetPosFn g_SetPos = NULL;
@@ -148,7 +156,13 @@ static BYTE g_titlePlaceTramp[32];
 
 static SurfDrawSetColorFn g_origDrawSetColor = NULL;
 static SurfDrawFilledRectFn g_origDrawFilledRect = NULL;
+static SurfSetCursorFn g_origSetCursor = NULL;
 static int g_surfaceHooked = 0;
+static void *g_sliderCursorOwner = NULL;
+static int g_sliderCursorClipped = 0;
+static int g_sliderLockY = 0;
+static int g_sliderDragAbandoned = 0;
+static HWND g_sliderClipHwnd = NULL;
 
 static volatile LONG g_roundDisabled = 0;
 static volatile LONG g_inOurDraw = 0;
@@ -1062,7 +1076,7 @@ static void DrawToggleSwitch(void *thisPtr)
     trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
     DrawPillAt(x, y, trackW, trackH, trackRgb);
     DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
-               0xF5F5F7u, trackRgb);
+               SLIDER_KNOB_RGB, trackRgb);
 }
 
 /* Same SurfaceFill path as the track — no ISurface text (that crashed).
@@ -1090,9 +1104,8 @@ static void DrawGlyphRow(int x, int y, unsigned char bits, unsigned int packed)
     }
 }
 
-static int DrawValueGlyphs(int x, int y, const char *text)
+static int DrawValueGlyphs(int x, int y, const char *text, unsigned int packed)
 {
-    unsigned int packed = ThemeRgbPacked(0xF5F5F7u);
     int cx = x;
     int i;
     for (i = 0; text[i] != '\0'; i++) {
@@ -1111,22 +1124,131 @@ static int DrawValueGlyphs(int x, int y, const char *text)
     return cx - x;
 }
 
-static void DrawSliderDragValue(void *thisPtr, int cx, int knobBottom, int panelH)
+static void SurfaceApplyCursor(unsigned long cursor)
 {
-    char buf[16];
+    void *surf;
+    if (g_GetSurface == NULL) {
+        return;
+    }
+    surf = g_GetSurface();
+    if (surf == NULL || IsBadReadPtr(surf, sizeof(void *))) {
+        return;
+    }
+    if (g_origSetCursor != NULL) {
+        g_origSetCursor(surf, cursor);
+        return;
+    }
+    {
+        void **vt = *(void ***)surf;
+        SurfSetCursorFn setCursor;
+        if (vt == NULL) {
+            return;
+        }
+        setCursor = (SurfSetCursorFn)vt[SURF_VT_SETCURSOR / sizeof(void *)];
+        if (setCursor != NULL) {
+            setCursor(surf, cursor);
+        }
+    }
+}
+
+static void ReleaseSliderCursorClip(void)
+{
+    if (g_sliderCursorClipped) {
+        ClipCursor(NULL);
+        g_sliderCursorClipped = 0;
+    }
+}
+
+static int SliderDragLostFocus(void)
+{
+    HWND fg;
+    if (g_sliderClipHwnd == NULL) {
+        return 0;
+    }
+    fg = GetForegroundWindow();
+    if (fg != g_sliderClipHwnd) {
+        return 1;
+    }
+    if (IsIconic(g_sliderClipHwnd) || !IsWindowVisible(g_sliderClipHwnd)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void AbandonSliderCursorLock(void)
+{
+    g_sliderDragAbandoned = 1;
+    g_sliderCursorOwner = NULL;
+    g_sliderClipHwnd = NULL;
+    ReleaseSliderCursorClip();
+    SurfaceApplyCursor(VGUI_DC_ARROW);
+}
+
+static void UpdateSliderDragCursor(void *slider, int trackX0, int trackX1, int knobX)
+{
+    int dragging;
+    POINT pt;
+    RECT clip;
+    (void)trackX0;
+    (void)trackX1;
+    (void)knobX;
+    if (slider == NULL || IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)) {
+        return;
+    }
+    dragging = *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0;
+    if (!dragging) {
+        if (g_sliderCursorOwner == slider) {
+            g_sliderCursorOwner = NULL;
+            g_sliderClipHwnd = NULL;
+            g_sliderDragAbandoned = 0;
+            ReleaseSliderCursorClip();
+            SurfaceApplyCursor(VGUI_DC_ARROW);
+        }
+        return;
+    }
+    if (g_sliderDragAbandoned) {
+        ReleaseSliderCursorClip();
+        return;
+    }
+    if (g_sliderCursorOwner == slider && SliderDragLostFocus()) {
+        AbandonSliderCursorLock();
+        return;
+    }
+    if (!GetCursorPos(&pt)) {
+        g_sliderCursorOwner = slider;
+        SurfaceApplyCursor(VGUI_DC_NONE);
+        return;
+    }
+    if (g_sliderCursorOwner != slider) {
+        g_sliderLockY = pt.y;
+        g_sliderClipHwnd = GetForegroundWindow();
+        g_sliderCursorOwner = slider;
+        g_sliderDragAbandoned = 0;
+    }
+    if (pt.y != g_sliderLockY) {
+        SetCursorPos(pt.x, g_sliderLockY);
+    }
+    clip.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    clip.top = g_sliderLockY;
+    clip.right = clip.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    clip.bottom = g_sliderLockY + 1;
+    if (clip.right <= clip.left) {
+        clip.left = 0;
+        clip.right = GetSystemMetrics(SM_CXSCREEN);
+    }
+    ClipCursor(&clip);
+    g_sliderCursorClipped = 1;
+    SurfaceApplyCursor(VGUI_DC_NONE);
+}
+
+static int FormatSliderDragText(void *thisPtr, char *buf, int bufSize)
+{
     int minv;
     int maxv;
     int val;
     float f;
-    int tw;
-    int tx;
-    int ty;
-    if (thisPtr == NULL) {
-        return;
-    }
-    if (IsBadReadPtr((char *)thisPtr + OFF_SLIDER_DRAGGING, 1)
-        || *((unsigned char *)thisPtr + OFF_SLIDER_DRAGGING) == 0) {
-        return;
+    if (thisPtr == NULL || buf == NULL || bufSize < 4) {
+        return 0;
     }
     minv = *(int *)((char *)thisPtr + OFF_SLIDER_MIN);
     maxv = *(int *)((char *)thisPtr + OFF_SLIDER_MAX);
@@ -1134,34 +1256,38 @@ static void DrawSliderDragValue(void *thisPtr, int cx, int knobBottom, int panel
     if (IsCvarSlider(thisPtr)) {
         f = (float)val / 100.0f;
         if (SliderStepFor(thisPtr) >= 10) {
-            _snprintf(buf, sizeof(buf), "%.1f", f);
+            _snprintf(buf, bufSize, "%.1f", f);
         } else {
-            _snprintf(buf, sizeof(buf), "%.2f", f);
+            _snprintf(buf, bufSize, "%.2f", f);
         }
     } else if (minv == 0 && maxv == 100) {
-        _snprintf(buf, sizeof(buf), "%.2f", (float)val / 100.0f);
+        _snprintf(buf, bufSize, "%.2f", (float)val / 100.0f);
     } else {
-        _snprintf(buf, sizeof(buf), "%d", val);
+        _snprintf(buf, bufSize, "%d", val);
     }
-    tw = 0;
-    {
-        int i;
-        for (i = 0; buf[i] != '\0'; i++) {
-            tw += (buf[i] == '.') ? 4 : 8;
-        }
+    buf[bufSize - 1] = '\0';
+    return 1;
+}
+
+static int GlyphTextWidth(const char *text)
+{
+    int tw = 0;
+    int i;
+    if (text == NULL) {
+        return 0;
     }
-    tx = cx - tw / 2;
-    if (tx < 0) {
-        tx = 0;
+    for (i = 0; text[i] != '\0'; i++) {
+        tw += (text[i] == '.') ? 4 : 8;
     }
-    ty = knobBottom + 4;
-    if (ty + 10 > panelH) {
-        ty = knobBottom - 12;
-        if (ty < 0) {
-            ty = 0;
-        }
+    return tw;
+}
+
+static int SliderIsDragging(void *thisPtr)
+{
+    if (thisPtr == NULL || IsBadReadPtr((char *)thisPtr + OFF_SLIDER_DRAGGING, 1)) {
+        return 0;
     }
-    DrawValueGlyphs(tx, ty, buf);
+    return *((unsigned char *)thisPtr + OFF_SLIDER_DRAGGING) != 0;
 }
 
 static void DrawValueSlider(void *thisPtr)
@@ -1181,6 +1307,11 @@ static void DrawValueSlider(void *thisPtr)
     int row;
     int knobX;
     int knobY;
+    int dragging;
+    char buf[16];
+    int tw;
+    int capW;
+    int capH;
 
     if (g_GetSize == NULL || thisPtr == NULL) {
         return;
@@ -1224,6 +1355,15 @@ static void DrawValueSlider(void *thisPtr)
     if ((knob & 1) != 0) {
         knob -= 1;
     }
+    dragging = SliderIsDragging(thisPtr);
+    buf[0] = '\0';
+    tw = 0;
+    capW = SLIDER_VALUE_CAPSULE_W;
+    capH = SLIDER_VALUE_CAPSULE_H;
+    if (dragging) {
+        FormatSliderDragText(thisPtr, buf, (int)sizeof(buf));
+        tw = GlyphTextWidth(buf);
+    }
     padX = knob / 2;
     if (padX < 8) {
         padX = 8;
@@ -1231,11 +1371,7 @@ static void DrawValueSlider(void *thisPtr)
     if (w - padX * 2 < 16) {
         padX = 4;
     }
-    if (h >= 44) {
-        trackY = 8;
-    } else {
-        trackY = (h - trackH) / 2;
-    }
+    trackY = (h - trackH) / 2;
     if (trackY < 0) {
         trackY = 0;
     }
@@ -1282,16 +1418,45 @@ static void DrawValueSlider(void *thisPtr)
             }
         }
     }
-    knobX = cx - knob / 2;
-    knobY = trackY + (trackH - knob) / 2;
-    if (knobX < 0) {
-        knobX = 0;
+    if (dragging) {
+        knobX = cx - capW / 2;
+        knobY = trackY + (trackH - capH) / 2;
+        if (knobX < 0) {
+            knobX = 0;
+        }
+        if (knobX + capW > w) {
+            knobX = w - capW;
+            if (knobX < 0) {
+                knobX = 0;
+            }
+        }
+        if (knobY < 0) {
+            knobY = 0;
+        }
+        if (knobY + capH > h) {
+            knobY = h - capH;
+            if (knobY < 0) {
+                knobY = 0;
+            }
+        }
+        DrawPillAt(knobX, knobY, capW, capH, SLIDER_KNOB_RGB);
+        if (buf[0] != '\0') {
+            int tx = knobX + (capW - tw) / 2;
+            int ty = knobY + (capH - 10) / 2;
+            DrawValueGlyphs(tx, ty, buf, ThemeRgbPacked(SLIDER_VALUE_INK_RGB));
+        }
+    } else {
+        knobX = cx - knob / 2;
+        knobY = trackY + (trackH - knob) / 2;
+        if (knobX < 0) {
+            knobX = 0;
+        }
+        if (knobY < 0) {
+            knobY = 0;
+        }
+        DrawAaDisk(knobX, knobY, knob, SLIDER_KNOB_RGB, g_theme.windowRgb);
     }
-    if (knobY < 0) {
-        knobY = 0;
-    }
-    DrawAaDisk(knobX, knobY, knob, 0xF5F5F7u, g_theme.windowRgb);
-    DrawSliderDragValue(thisPtr, cx, knobY + knob, h);
+    UpdateSliderDragCursor(thisPtr, padX, w - padX, cx);
 }
 
 void RoundFrame_SetDragValueLabel(void *label, int restX, int restY)
@@ -1738,6 +1903,34 @@ static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb)
     }
 }
 
+static void __fastcall SetCursor_Hook(void *surf, void *edx, unsigned long cursor)
+{
+    (void)edx;
+    if (g_sliderCursorOwner != NULL) {
+        cursor = VGUI_DC_NONE;
+    }
+    if (g_origSetCursor != NULL) {
+        g_origSetCursor(surf, cursor);
+    }
+}
+
+static void HookSurfaceSetCursor(void **vt)
+{
+    DWORD oldProtect;
+    unsigned int idx = SURF_VT_SETCURSOR / sizeof(void *);
+    if (vt == NULL || vt[idx] == NULL || vt[idx] == (void *)SetCursor_Hook
+        || IsBadCodePtr((FARPROC)vt[idx])) {
+        return;
+    }
+    if (!VirtualProtect(&vt[idx], sizeof(void *), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return;
+    }
+    g_origSetCursor = (SurfSetCursorFn)vt[idx];
+    vt[idx] = (void *)SetCursor_Hook;
+    VirtualProtect(&vt[idx], sizeof(void *), oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), &vt[idx], sizeof(void *));
+}
+
 static void __fastcall DrawSetColor_Hook(void *surf, void *edx, unsigned int packedRgba)
 {
     (void)edx;
@@ -1842,7 +2035,7 @@ static void EnsureSurfaceHooks(void)
     void *surf;
     void **vt;
     DWORD oldProtect;
-    if (g_surfaceHooked || g_GetSurface == NULL) {
+    if (g_GetSurface == NULL) {
         return;
     }
     surf = g_GetSurface();
@@ -1851,6 +2044,10 @@ static void EnsureSurfaceHooks(void)
     }
     vt = *(void ***)surf;
     if (vt == NULL) {
+        return;
+    }
+    HookSurfaceSetCursor(vt);
+    if (g_surfaceHooked) {
         return;
     }
     /* Video restart re-inits GameUI but vgui2.dll can stay mapped. Do not
@@ -2431,6 +2628,10 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
 
     InterlockedExchange(&g_roundDisabled, 0);
     g_surfaceHooked = 0;
+    g_sliderCursorOwner = NULL;
+    g_sliderDragAbandoned = 0;
+    g_sliderClipHwnd = NULL;
+    ReleaseSliderCursorClip();
     g_roundActive = 0;
     g_gameUiBase = base;
     g_SetPos = (SetPosFn)(base + RVA_SETPOS);

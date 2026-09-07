@@ -194,6 +194,8 @@ static void EnsureSurfaceHooks(void);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb);
+static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, int trackH,
+                              int splitX, uint32_t accentRgb, uint32_t trackRgb, uint32_t windowRgb);
 static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb);
 static int PillInset(int y, int h);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
@@ -224,12 +226,12 @@ static int ThemeStrokeThickness(void)
     return t;
 }
 
-static unsigned int MixRgbToWindow(uint32_t rgb, float a)
+static unsigned int MixRgbPair(uint32_t rgb, uint32_t bgRgb, float a)
 {
     int sr, sg, sb, br, bg, bb;
     int or_, og, ob;
     if (a <= 0.0f) {
-        return ThemeRgbPacked(g_theme.windowRgb);
+        return ThemeRgbPacked(bgRgb);
     }
     if (a >= 1.0f) {
         return ThemeRgbPacked(rgb);
@@ -237,13 +239,18 @@ static unsigned int MixRgbToWindow(uint32_t rgb, float a)
     sr = (int)((rgb >> 16) & 0xFFu);
     sg = (int)((rgb >> 8) & 0xFFu);
     sb = (int)(rgb & 0xFFu);
-    br = (int)((g_theme.windowRgb >> 16) & 0xFFu);
-    bg = (int)((g_theme.windowRgb >> 8) & 0xFFu);
-    bb = (int)(g_theme.windowRgb & 0xFFu);
+    br = (int)((bgRgb >> 16) & 0xFFu);
+    bg = (int)((bgRgb >> 8) & 0xFFu);
+    bb = (int)(bgRgb & 0xFFu);
     or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
     og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
     ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
     return ThemeRgbPacked(((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob);
+}
+
+static unsigned int MixRgbToWindow(uint32_t rgb, float a)
+{
+    return MixRgbPair(rgb, g_theme.windowRgb, a);
 }
 
 /* Subpixel inset of a circular corner; same circle as the integer fill. */
@@ -272,7 +279,7 @@ static float CornerInsetF(int y, int h, int r)
     return rf - sqrtf(inside);
 }
 
-static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
+static void FillSpanSoftEnds(int y, float x0, float x1, uint32_t rgb, uint32_t bgL, uint32_t bgR)
 {
     int s;
     int e;
@@ -287,7 +294,7 @@ static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
         s = (int)x0 - 1;
     }
     if (s == e) {
-        SurfaceFill(s, y, s + 1, y + 1, MixRgbToWindow(rgb, x1 - x0));
+        SurfaceFill(s, y, s + 1, y + 1, MixRgbPair(rgb, bgL, x1 - x0));
         return;
     }
     a0 = (float)(s + 1) - x0;
@@ -297,7 +304,7 @@ static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
     if (a0 > 1.0f) {
         a0 = 1.0f;
     }
-    SurfaceFill(s, y, s + 1, y + 1, MixRgbToWindow(rgb, a0));
+    SurfaceFill(s, y, s + 1, y + 1, MixRgbPair(rgb, bgL, a0));
     if (e > s + 1) {
         SurfaceFill(s + 1, y, e, y + 1, ThemeRgbPacked(rgb));
     }
@@ -306,8 +313,13 @@ static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
         if (a1 > 1.0f) {
             a1 = 1.0f;
         }
-        SurfaceFill(e, y, e + 1, y + 1, MixRgbToWindow(rgb, a1));
+        SurfaceFill(e, y, e + 1, y + 1, MixRgbPair(rgb, bgR, a1));
     }
+}
+
+static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
+{
+    FillSpanSoftEnds(y, x0, x1, rgb, g_theme.windowRgb, g_theme.windowRgb);
 }
 
 static int ISqrt(int n)
@@ -1403,20 +1415,12 @@ static void DrawValueSlider(void *thisPtr)
         cx = w - padX;
     }
     DrawPillAt(padX, trackY, w - padX * 2, trackH, g_theme.trackRgb);
-    /* Straight right edge under the knob so the disk covers the join. */
     if (cx > padX) {
+        int tr = trackH / 2;
         for (row = 0; row < trackH; row++) {
-            int inset = PillInset(row, trackH);
-            int xL = padX + inset;
-            int xFillR = cx;
-            int xTrackR = w - padX - inset;
-            if (xFillR > xTrackR) {
-                xFillR = xTrackR;
-            }
-            if (xFillR > xL) {
-                SurfaceFill(xL, trackY + row, xFillR, trackY + row + 1,
-                            ThemeRgbPacked(g_theme.accentRgb));
-            }
+            float inset = CornerInsetF(row, trackH, tr);
+            FillSpanSoftEnds(trackY + row, (float)padX + inset, (float)cx,
+                             g_theme.accentRgb, g_theme.windowRgb, g_theme.accentRgb);
         }
     }
     if (dragging) {
@@ -1440,11 +1444,19 @@ static void DrawValueSlider(void *thisPtr)
                 knobY = 0;
             }
         }
-        for (row = 0; row < capH; row++) {
-            int inset = PillInset(row, capH);
-            if (capW > inset * 2) {
-                SurfaceFill(knobX + inset, knobY + row, knobX + capW - inset,
-                            knobY + row + 1, ThemeRgbPacked(g_theme.accentRgb));
+        {
+            int cr = capH / 2;
+            for (row = 0; row < capH; row++) {
+                float inset = CornerInsetF(row, capH, cr);
+                int py = knobY + row;
+                uint32_t bgL = g_theme.windowRgb;
+                uint32_t bgR = g_theme.windowRgb;
+                if (py >= trackY && py < trackY + trackH) {
+                    bgL = g_theme.accentRgb;
+                    bgR = g_theme.trackRgb;
+                }
+                FillSpanSoftEnds(py, (float)knobX + inset, (float)(knobX + capW) - inset,
+                                 g_theme.accentRgb, bgL, bgR);
             }
         }
         if (buf[0] != '\0') {
@@ -1461,7 +1473,8 @@ static void DrawValueSlider(void *thisPtr)
         if (knobY < 0) {
             knobY = 0;
         }
-        DrawAaDisk(knobX, knobY, knob, SLIDER_KNOB_RGB, g_theme.windowRgb);
+        DrawAaDiskOnTrack(knobX, knobY, knob, SLIDER_KNOB_RGB, trackY, trackH, cx,
+                          g_theme.accentRgb, g_theme.trackRgb, g_theme.windowRgb);
         DrawAaDisk(knobX + (knob - SLIDER_KNOB_DOT) / 2,
                    knobY + (knob - SLIDER_KNOB_DOT) / 2,
                    SLIDER_KNOB_DOT, g_theme.accentRgb, SLIDER_KNOB_RGB);
@@ -2288,6 +2301,58 @@ static void PaintMacCloseDot(void *thisPtr)
         rgb = 0xFF5F57u;
     }
     DrawAaDisk(ox, oy, d, rgb, g_theme.windowRgb);
+}
+
+static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, int trackH,
+                              int splitX, uint32_t accentRgb, uint32_t trackRgb, uint32_t windowRgb)
+{
+    float cx;
+    float cy;
+    float rad;
+    int px;
+    int py;
+    int sr;
+    int sg;
+    int sb;
+
+    if (d < 4) {
+        return;
+    }
+    cx = (float)x0 + (float)d * 0.5f;
+    cy = (float)y0 + (float)d * 0.5f;
+    rad = (float)d * 0.5f - 0.35f;
+    sr = (int)((rgb >> 16) & 0xFFu);
+    sg = (int)((rgb >> 8) & 0xFFu);
+    sb = (int)(rgb & 0xFFu);
+    for (py = y0; py < y0 + d; py++) {
+        for (px = x0; px < x0 + d; px++) {
+            float dx = ((float)px + 0.5f) - cx;
+            float dy = ((float)py + 0.5f) - cy;
+            float dist = (float)sqrt(dx * dx + dy * dy);
+            float a = (rad + 1.15f) - dist;
+            uint32_t bgRgb;
+            int br, bg, bb, or_, og, ob;
+            if (a <= 0.0f) {
+                continue;
+            }
+            if (a > 1.0f) {
+                a = 1.0f;
+            }
+            if (py >= trackY && py < trackY + trackH) {
+                bgRgb = (px < splitX) ? accentRgb : trackRgb;
+            } else {
+                bgRgb = windowRgb;
+            }
+            br = (int)((bgRgb >> 16) & 0xFFu);
+            bg = (int)((bgRgb >> 8) & 0xFFu);
+            bb = (int)(bgRgb & 0xFFu);
+            or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
+            og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
+            ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
+            SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(
+                ((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob));
+        }
+    }
 }
 
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb)

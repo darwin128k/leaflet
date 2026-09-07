@@ -10,17 +10,27 @@ typedef void *(*GetCvarPointerFn)(const char *name);
 typedef float (*GetCvarFloatFn)(const char *name);
 typedef void (*CvarSetValueFn)(const char *name, float value);
 typedef void(__thiscall *ComboActivateFn)(void *self, int index);
+typedef void(__thiscall *PaintFn)(void *self);
 
 #define RVA_FINDCHILDBYNAME 0x00044100u
 #define RVA_SETPOS          0x000436f0u
 #define RVA_ENGINE          0x000C3C9Cu /* cl_enginefunc_t *engine; CCvarSlider::Paint mov ecx,[imm] */
 #define RVA_COMBO_ACTIVATE  0x00031310u /* CLabeledCommandComboBox::ActivateItem(int) */
-#define OFF_SETVISIBLE_VT   0x70
+#define RVA_CCVARSLIDER_VT  0x00097a3cu
+#define VT_PAINT_INDEX      107
+#define OFF_SETVISIBLE_VT   0x74 /* Panel::SetVisible; CCvarSlider slot 0x70 is the deleting dtor */
 #define OFF_BUTTON_ISSELECTED_VT 0x2b8
 #define OFF_PANEL_NAME      0x44
+#define OFF_CCVAR_NAME      0xC8 /* CCvarSlider::m_szCvarName; ctor lea edx,[esi+0xC8] */
+#define CCVAR_NAME_SIZE     64
 #define ENG_GETCVARFLOAT    15
 #define ENG_CVAR_SETVALUE   37
 #define ENG_GETCVARPOINTER  72
+#define OFF_SLIDER_MIN      0x8C
+#define OFF_SLIDER_MAX      0x90
+#define OFF_SLIDER_VALUE    0x94
+#define DOPPLER_SCALE       100.0f
+#define DOPPLER_MAX         2.0f
 
 typedef struct {
     const char *field;
@@ -33,7 +43,6 @@ static const AudioToggle kToggles[] = {
     { "al_occlusion", "al_occlusion", 1.0f },
     { "al_occlusion_fade", "al_occlusion_fade", 1.0f },
     { "al_resample_all", "al_resample_all", 1.0f },
-    { "al_doppler", "al_doppler", 0.3f },
     { "al_xfi_workaround", "al_xfi_workaround", 1.0f },
     { "al_clamping_mode", "al_clamping_mode", 1.0f },
 };
@@ -44,9 +53,12 @@ static BYTE *g_gameUiBase = NULL;
 static FindChildByNameFn g_FindChild = NULL;
 static SetPosFn g_SetPos = NULL;
 static ComboActivateFn g_ComboActivate = NULL;
+static PaintFn g_origCvarSliderPaint = NULL;
 static void *g_audioPage = NULL;
 static unsigned char g_seeded[TOGGLE_COUNT];
 static unsigned char g_lastUi[TOGGLE_COUNT];
+static int g_dopplerSeeded = 0;
+static int g_lastDoppler = -1;
 
 static void **EngineTable(void)
 {
@@ -240,10 +252,22 @@ static void SyncHiddenQualityCombo(int highOn)
     }
 }
 
+static void __fastcall CvarSliderPaint_Hook(void *self)
+{
+    /* Same order as stock: live cvar from the knob, then GameUI Paint
+     * (GetCvarFloat + Slider::Paint). Volume sliders skip the first call. */
+    AudioExtra_OnSliderPaint(self);
+    if (g_origCvarSliderPaint != NULL) {
+        g_origCvarSliderPaint(self);
+    }
+}
+
 void AudioExtra_Init(HMODULE hGameUI)
 {
     memset(g_seeded, 0, sizeof(g_seeded));
     memset(g_lastUi, 0, sizeof(g_lastUi));
+    g_dopplerSeeded = 0;
+    g_lastDoppler = -1;
     g_audioPage = NULL;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
@@ -255,6 +279,18 @@ void AudioExtra_Init(HMODULE hGameUI)
     g_FindChild = (FindChildByNameFn)(g_gameUiBase + RVA_FINDCHILDBYNAME);
     g_SetPos = (SetPosFn)(g_gameUiBase + RVA_SETPOS);
     g_ComboActivate = (ComboActivateFn)(g_gameUiBase + RVA_COMBO_ACTIVATE);
+    {
+        void **vt;
+        DWORD oldProtect;
+        vt = (void **)(g_gameUiBase + RVA_CCVARSLIDER_VT);
+        if (!IsBadReadPtr(vt, (VT_PAINT_INDEX + 1) * sizeof(void *))) {
+            if (VirtualProtect(&vt[VT_PAINT_INDEX], sizeof(void *), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                g_origCvarSliderPaint = (PaintFn)vt[VT_PAINT_INDEX];
+                vt[VT_PAINT_INDEX] = (void *)CvarSliderPaint_Hook;
+                VirtualProtect(&vt[VT_PAINT_INDEX], sizeof(void *), oldProtect, &oldProtect);
+            }
+        }
+    }
 }
 
 void AudioExtra_SyncToggle(void *btn)
@@ -320,10 +356,93 @@ void AudioExtra_BindPage(void *audioPage)
             HideNamed(audioPage, "al_occlusion_fade");
             HideNamed(audioPage, "al_resample_all");
             HideNamed(audioPage, "al_doppler");
+            HideNamed(audioPage, "al_doppler_label");
             HideNamed(audioPage, "al_xfi_workaround");
             HideNamed(audioPage, "al_clamping_mode");
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+void AudioExtra_EnsureDopplerSlider(void *audioPage)
+{
+    void *sl;
+    char *cvar;
+    void **vt;
+    SetVisibleFn vis;
+    if (audioPage == NULL) {
+        return;
+    }
+    /* CS hides the HEV suit slider; it is already a CCvarSlider 0–2.
+     * Retarget it at al_doppler instead of constructing a new widget. */
+    sl = FindChild(audioPage, "Suit Slider");
+    if (sl == NULL) {
+        return;
+    }
+    cvar = (char *)sl + OFF_CCVAR_NAME;
+    if (IsBadWritePtr(cvar, CCVAR_NAME_SIZE)) {
+        return;
+    }
+    lstrcpynA(cvar, "al_doppler", CCVAR_NAME_SIZE);
+    vt = *(void ***)sl;
+    if (vt != NULL) {
+        vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
+        if (vis != NULL) {
+            __try {
+                vis(sl, 1);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+    }
+}
+
+void AudioExtra_OnSliderPaint(void *slider)
+{
+    const char *name;
+    int minv;
+    int maxv;
+    int cur;
+    int want;
+    if (slider == NULL || IsBadReadPtr((char *)slider + OFF_SLIDER_VALUE, 4)) {
+        return;
+    }
+    name = PanelName(slider);
+    if (lstrcmpiA(name, "al_doppler") != 0 && lstrcmpiA(name, "Suit Slider") != 0) {
+        return;
+    }
+    if (!CvarExists("al_doppler")) {
+        return;
+    }
+    minv = 0;
+    maxv = (int)(DOPPLER_MAX * DOPPLER_SCALE + 0.5f);
+    *(int *)((char *)slider + OFF_SLIDER_MIN) = minv;
+    *(int *)((char *)slider + OFF_SLIDER_MAX) = maxv;
+    want = (int)(CvarGet("al_doppler") * DOPPLER_SCALE + 0.5f);
+    if (want < minv) {
+        want = minv;
+    }
+    if (want > maxv) {
+        want = maxv;
+    }
+    if (!g_dopplerSeeded) {
+        *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+        g_lastDoppler = want;
+        g_dopplerSeeded = 1;
+        return;
+    }
+    cur = *(int *)((char *)slider + OFF_SLIDER_VALUE);
+    if (cur < minv) {
+        cur = minv;
+    }
+    if (cur > maxv) {
+        cur = maxv;
+    }
+    if (cur != g_lastDoppler) {
+        CvarSet("al_doppler", (float)cur / DOPPLER_SCALE);
+        g_lastDoppler = cur;
+    } else if (want != g_lastDoppler) {
+        *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+        g_lastDoppler = want;
     }
 }
 

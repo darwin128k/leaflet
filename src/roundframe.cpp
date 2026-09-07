@@ -196,6 +196,9 @@ static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int 
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb);
 static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, int trackH,
                               int splitX, uint32_t accentRgb, uint32_t trackRgb, uint32_t windowRgb);
+static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bgRgb);
+static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rgb, uint32_t bgRgb,
+                                int roundTop, int roundBottom);
 static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb);
 static int PillInset(int y, int h);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
@@ -947,7 +950,7 @@ static void PaintControlPlate(void *thisPtr)
 {
     int w = 0, h = 0;
     int r;
-    unsigned int fill;
+    uint32_t rgb;
     if (g_GetSize == NULL) {
         return;
     }
@@ -960,9 +963,8 @@ static void PaintControlPlate(void *thisPtr)
     if (r * 2 > h) {
         r = h / 2;
     }
-    fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
-                                 : ThemeRgbPacked(g_theme.trackRgb);
-    DrawRoundedFillAt(0, 0, w, h, r, fill, 1, 1);
+    rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb : g_theme.trackRgb;
+    DrawAaRoundedFillAt(0, 0, w, h, r, rgb, g_theme.windowRgb, 1, 1);
 }
 
 static int IsMouseToggleName(const char *name)
@@ -1087,9 +1089,10 @@ static void DrawToggleSwitch(void *thisPtr)
         y = 0;
     }
     trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
-    DrawPillAt(x, y, trackW, trackH, trackRgb);
-    DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
-               SLIDER_KNOB_RGB, trackRgb);
+    DrawAaPillAt(x, y, trackW, trackH, trackRgb, g_theme.windowRgb);
+    DrawAaDiskOnTrack(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
+                      SLIDER_KNOB_RGB, y, trackH, on ? (x + trackW) : x,
+                      g_theme.accentRgb, g_theme.trackRgb, g_theme.windowRgb);
 }
 
 /* Same SurfaceFill path as the track — no ISurface text (that crashed).
@@ -1999,14 +2002,14 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
             r = 3;
         }
         {
-            unsigned int fill = g_roundHot ? ThemeRgbPacked(g_theme.accentRgb)
-                                           : ThemeRgbPacked(g_theme.trackRgb);
             g_edgeCaptured = 1;
             g_edgeX = x0;
             g_edgeY = y0;
             g_edgeRoundTop = 1;
             g_edgeRoundBottom = 1;
-            DrawRoundedFillAt(x0, y0, rw, rh, r, fill, 1, 1);
+            DrawAaRoundedFillAt(x0, y0, rw, rh, r,
+                                g_roundHot ? g_theme.accentRgb : g_theme.trackRgb,
+                                g_theme.windowRgb, 1, 1);
         }
         return;
     }
@@ -2142,9 +2145,9 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
             if (isBtn) {
                 int px = g_edgeCaptured ? g_edgeX : 0;
                 int py = g_edgeCaptured ? g_edgeY : 0;
-                unsigned int fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
-                                                          : ThemeRgbPacked(g_theme.trackRgb);
-                DrawRoundedFillAt(px, py, w, h, 8, fill, 1, 1);
+                uint32_t rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb
+                                                     : g_theme.trackRgb;
+                DrawAaRoundedFillAt(px, py, w, h, 8, rgb, g_theme.windowRgb, 1, 1);
             } else {
                 /* Do not refill after orig: that covered the Frame title. */
                 DrawRoundedStrokeAt(0, 0, w, h, g_roundR,
@@ -2351,6 +2354,149 @@ static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, i
             ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
             SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(
                 ((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob));
+        }
+    }
+}
+
+static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bgRgb)
+{
+    float r;
+    float rad;
+    float cxL;
+    float cxR;
+    float cy;
+    int px;
+    int py;
+
+    if (w < 4 || h < 4) {
+        SurfaceFill(x0, y0, x0 + w, y0 + h, ThemeRgbPacked(rgb));
+        return;
+    }
+    if ((h & 1) != 0) {
+        h -= 1;
+    }
+    r = (float)h * 0.5f;
+    rad = r - 0.35f;
+    cxL = (float)x0 + r;
+    cxR = (float)x0 + (float)w - r;
+    cy = (float)y0 + r;
+    for (py = y0; py < y0 + h; py++) {
+        for (px = x0; px < x0 + w; px++) {
+            float qx = (float)px + 0.5f;
+            float qy = (float)py + 0.5f;
+            float dx;
+            float dy;
+            float dist;
+            float a;
+            if (qx < cxL) {
+                dx = qx - cxL;
+                dy = qy - cy;
+                dist = (float)sqrt(dx * dx + dy * dy);
+            } else if (qx > cxR) {
+                dx = qx - cxR;
+                dy = qy - cy;
+                dist = (float)sqrt(dx * dx + dy * dy);
+            } else {
+                dist = (float)fabs(qy - cy);
+            }
+            a = (rad + 1.15f) - dist;
+            if (a <= 0.0f) {
+                continue;
+            }
+            if (a > 1.0f) {
+                a = 1.0f;
+            }
+            SurfaceFill(px, py, px + 1, py + 1, MixRgbPair(rgb, bgRgb, a));
+        }
+    }
+}
+
+static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rgb, uint32_t bgRgb,
+                                int roundTop, int roundBottom)
+{
+    int topR;
+    int botR;
+    int px;
+    int py;
+
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    topR = roundTop ? r : 0;
+    botR = roundBottom ? r : 0;
+    if (topR * 2 + 4 > w) {
+        topR = ClampInt(w / 4, 0, topR);
+    }
+    if (botR * 2 + 4 > w) {
+        botR = ClampInt(w / 4, 0, botR);
+    }
+    if (topR + botR + 2 > h) {
+        int cap = ClampInt((h - 2) / 2, 0, r);
+        if (topR > cap) {
+            topR = cap;
+        }
+        if (botR > cap) {
+            botR = cap;
+        }
+    }
+    if (topR < 2 && botR < 2) {
+        SurfaceFill(x0, y0, x0 + w, y0 + h, ThemeRgbPacked(rgb));
+        return;
+    }
+    for (py = y0; py < y0 + h; py++) {
+        for (px = x0; px < x0 + w; px++) {
+            float qx = (float)px + 0.5f;
+            float qy = (float)py + 0.5f;
+            float xL = (float)x0;
+            float yT = (float)y0;
+            float xR = (float)(x0 + w);
+            float yB = (float)(y0 + h);
+            float cr = 0.0f;
+            float cx = 0.0f;
+            float cy = 0.0f;
+            int corner = 0;
+            float a;
+            if (topR > 0 && qy < yT + (float)topR) {
+                if (qx < xL + (float)topR) {
+                    corner = 1;
+                    cr = (float)topR;
+                    cx = xL + cr;
+                    cy = yT + cr;
+                } else if (qx >= xR - (float)topR) {
+                    corner = 1;
+                    cr = (float)topR;
+                    cx = xR - cr;
+                    cy = yT + cr;
+                }
+            } else if (botR > 0 && qy >= yB - (float)botR) {
+                if (qx < xL + (float)botR) {
+                    corner = 1;
+                    cr = (float)botR;
+                    cx = xL + cr;
+                    cy = yB - cr;
+                } else if (qx >= xR - (float)botR) {
+                    corner = 1;
+                    cr = (float)botR;
+                    cx = xR - cr;
+                    cy = yB - cr;
+                }
+            }
+            if (corner) {
+                float dx = qx - cx;
+                float dy = qy - cy;
+                float dist = (float)sqrt(dx * dx + dy * dy);
+                float rad = cr - 0.35f;
+                a = (rad + 1.15f) - dist;
+                if (a <= 0.0f) {
+                    continue;
+                }
+                if (a > 1.0f) {
+                    a = 1.0f;
+                }
+            } else {
+                a = 1.0f;
+            }
+            SurfaceFill(px, py, px + 1, py + 1, MixRgbPair(rgb, bgRgb, a));
         }
     }
 }

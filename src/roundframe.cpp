@@ -361,6 +361,18 @@ static int RadiusForSize(int w, int h)
     return 12;
 }
 
+static int CapsuleRadius(int w, int h)
+{
+    int r = h / 2;
+    if (w / 2 < r) {
+        r = w / 2;
+    }
+    if (r < 2) {
+        r = 2;
+    }
+    return r;
+}
+
 static int CornerInset(int y, int h, int r)
 {
     int dy;
@@ -959,10 +971,7 @@ static void PaintControlPlate(void *thisPtr)
         return;
     }
     EnsureSurfaceHooks();
-    r = (h < 20) ? 4 : 8;
-    if (r * 2 > h) {
-        r = h / 2;
-    }
+    r = CapsuleRadius(w, h);
     rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb : g_theme.trackRgb;
     DrawAaRoundedFillAt(0, 0, w, h, r, rgb, g_theme.windowRgb, 1, 1);
 }
@@ -2121,7 +2130,7 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
             g_roundH = h;
             g_roundIsButton = isBtn;
             g_roundHot = isBtn && ControlIsHot(thisPtr);
-            g_roundR = isBtn ? 8 : RadiusForSize(w, h);
+            g_roundR = isBtn ? CapsuleRadius(w, h) : RadiusForSize(w, h);
             g_roundActive = 1;
             g_edgeCaptured = 0;
             if (!isBtn) {
@@ -2147,7 +2156,7 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
                 int py = g_edgeCaptured ? g_edgeY : 0;
                 uint32_t rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb
                                                      : g_theme.trackRgb;
-                DrawAaRoundedFillAt(px, py, w, h, 8, rgb, g_theme.windowRgb, 1, 1);
+                DrawAaRoundedFillAt(px, py, w, h, CapsuleRadius(w, h), rgb, g_theme.windowRgb, 1, 1);
             } else {
                 /* Do not refill after orig: that covered the Frame title. */
                 DrawRoundedStrokeAt(0, 0, w, h, g_roundR,
@@ -2424,14 +2433,14 @@ static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rg
     }
     topR = roundTop ? r : 0;
     botR = roundBottom ? r : 0;
-    if (topR * 2 + 4 > w) {
-        topR = ClampInt(w / 4, 0, topR);
+    if (topR * 2 > w) {
+        topR = w / 2;
     }
-    if (botR * 2 + 4 > w) {
-        botR = ClampInt(w / 4, 0, botR);
+    if (botR * 2 > w) {
+        botR = w / 2;
     }
-    if (topR + botR + 2 > h) {
-        int cap = ClampInt((h - 2) / 2, 0, r);
+    if (topR + botR > h) {
+        int cap = h / 2;
         if (topR > cap) {
             topR = cap;
         }
@@ -2597,19 +2606,19 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
     } else if (tab) {
         CenterRoundedButtonText(thisPtr);
         if (tabHot) {
-        unsigned char *fg = (unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE_FG;
-        /* Selected colour at +0x109, idle/hover colour at +0x10D. */
-        fg[0] = 245;
-        fg[1] = 245;
-        fg[2] = 247;
-        fg[3] = 255;
-        fg[4] = 245;
-        fg[5] = 245;
-        fg[6] = 247;
-        fg[7] = 255;
-        ForceWhiteOnTransparent(thisPtr);
-        SetFgColorWhite(thisPtr);
-        PaintControlPlate(thisPtr);
+            unsigned char *fg = (unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE_FG;
+            /* Selected colour at +0x109, idle/hover colour at +0x10D. */
+            fg[0] = 245;
+            fg[1] = 245;
+            fg[2] = 247;
+            fg[3] = 255;
+            fg[4] = 245;
+            fg[5] = 245;
+            fg[6] = 247;
+            fg[7] = 255;
+            ForceWhiteOnTransparent(thisPtr);
+            SetFgColorWhite(thisPtr);
+            PaintControlPlate(thisPtr);
         }
     }
     if (g_origButtonPaint != NULL) {

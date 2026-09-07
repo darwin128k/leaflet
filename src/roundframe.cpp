@@ -2431,11 +2431,16 @@ static void __fastcall SliderPaintBg_Hook(void *thisPtr)
     (void)thisPtr;
 }
 
+void RoundFrame_PaintOptionsSlider(void *slider)
+{
+    AudioExtra_OnSliderPaint(slider);
+    SnapCvarSlider(slider);
+    DrawValueSlider(slider);
+}
+
 static void __fastcall SliderPaint_Hook(void *thisPtr)
 {
-    AudioExtra_OnSliderPaint(thisPtr);
-    SnapCvarSlider(thisPtr);
-    DrawValueSlider(thisPtr);
+    RoundFrame_PaintOptionsSlider(thisPtr);
 }
 
 static void __fastcall ProgressPaintBg_Hook(void *thisPtr)

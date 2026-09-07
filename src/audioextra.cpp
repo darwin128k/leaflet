@@ -1,4 +1,5 @@
 #include "audioextra.h"
+#include "roundframe.h"
 #include "log.h"
 #include <string.h>
 
@@ -60,6 +61,7 @@ static unsigned char g_seeded[TOGGLE_COUNT];
 static unsigned char g_lastUi[TOGGLE_COUNT];
 static int g_dopplerSeeded = 0;
 static int g_lastDoppler = -1;
+static int g_dopplerDirty = 0;
 
 static void **EngineTable(void)
 {
@@ -255,11 +257,79 @@ static void SyncHiddenQualityCombo(int highOn)
 
 static void __fastcall CvarSliderPaint_Hook(void *self)
 {
-    /* Same order as stock: live cvar from the knob, then GameUI Paint
-     * (GetCvarFloat + Slider::Paint). Volume sliders skip the first call. */
-    AudioExtra_OnSliderPaint(self);
+    const char *name = PanelName(self);
+    /* Stock CCvarSlider::Paint reads the cvar every frame and writes the
+     * knob. For the HEV slider we retargeted to al_doppler that fight the
+     * mouse (0–1 suit scale vs 0–2), so skip it and only draw our track. */
+    if (lstrcmpiA(name, "Suit Slider") == 0 || lstrcmpiA(name, "al_doppler") == 0) {
+        RoundFrame_PaintOptionsSlider(self);
+        return;
+    }
     if (g_origCvarSliderPaint != NULL) {
         g_origCvarSliderPaint(self);
+    }
+}
+
+void AudioExtra_OnSliderPaint(void *slider)
+{
+    const char *name;
+    int minv;
+    int maxv;
+    int cur;
+    int want;
+    int dragging;
+    if (slider == NULL || IsBadReadPtr((char *)slider + OFF_SLIDER_VALUE, 4)) {
+        return;
+    }
+    name = PanelName(slider);
+    if (lstrcmpiA(name, "al_doppler") != 0 && lstrcmpiA(name, "Suit Slider") != 0) {
+        return;
+    }
+    if (!CvarExists("al_doppler")) {
+        return;
+    }
+    minv = 0;
+    maxv = (int)(DOPPLER_MAX * DOPPLER_SCALE + 0.5f);
+    *(int *)((char *)slider + OFF_SLIDER_MIN) = minv;
+    *(int *)((char *)slider + OFF_SLIDER_MAX) = maxv;
+    want = (int)(CvarGet("al_doppler") * DOPPLER_SCALE + 0.5f);
+    if (want < minv) {
+        want = minv;
+    }
+    if (want > maxv) {
+        want = maxv;
+    }
+    if (!g_dopplerSeeded) {
+        *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+        g_lastDoppler = want;
+        g_dopplerSeeded = 1;
+        return;
+    }
+    dragging = 0;
+    if (!IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)) {
+        dragging = *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0;
+    }
+    cur = *(int *)((char *)slider + OFF_SLIDER_VALUE);
+    if (cur < minv) {
+        cur = minv;
+    }
+    if (cur > maxv) {
+        cur = maxv;
+    }
+    if (dragging) {
+        g_lastDoppler = cur;
+        g_dopplerDirty = 1;
+        return;
+    }
+    if (g_dopplerDirty) {
+        CvarSet("al_doppler", (float)cur / DOPPLER_SCALE);
+        g_lastDoppler = cur;
+        g_dopplerDirty = 0;
+        return;
+    }
+    if (cur != want) {
+        *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+        g_lastDoppler = want;
     }
 }
 
@@ -269,6 +339,7 @@ void AudioExtra_Init(HMODULE hGameUI)
     memset(g_lastUi, 0, sizeof(g_lastUi));
     g_dopplerSeeded = 0;
     g_lastDoppler = -1;
+    g_dopplerDirty = 0;
     g_audioPage = NULL;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
@@ -394,62 +465,6 @@ void AudioExtra_EnsureDopplerSlider(void *audioPage)
             } __except (EXCEPTION_EXECUTE_HANDLER) {
             }
         }
-    }
-}
-
-void AudioExtra_OnSliderPaint(void *slider)
-{
-    const char *name;
-    int minv;
-    int maxv;
-    int cur;
-    int want;
-    if (slider == NULL || IsBadReadPtr((char *)slider + OFF_SLIDER_VALUE, 4)) {
-        return;
-    }
-    name = PanelName(slider);
-    if (lstrcmpiA(name, "al_doppler") != 0 && lstrcmpiA(name, "Suit Slider") != 0) {
-        return;
-    }
-    if (!CvarExists("al_doppler")) {
-        return;
-    }
-    minv = 0;
-    maxv = (int)(DOPPLER_MAX * DOPPLER_SCALE + 0.5f);
-    *(int *)((char *)slider + OFF_SLIDER_MIN) = minv;
-    *(int *)((char *)slider + OFF_SLIDER_MAX) = maxv;
-    want = (int)(CvarGet("al_doppler") * DOPPLER_SCALE + 0.5f);
-    if (want < minv) {
-        want = minv;
-    }
-    if (want > maxv) {
-        want = maxv;
-    }
-    if (!g_dopplerSeeded) {
-        *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
-        g_lastDoppler = want;
-        g_dopplerSeeded = 1;
-        return;
-    }
-    cur = *(int *)((char *)slider + OFF_SLIDER_VALUE);
-    if (cur < minv) {
-        cur = minv;
-    }
-    if (cur > maxv) {
-        cur = maxv;
-    }
-    if (cur != g_lastDoppler) {
-        CvarSet("al_doppler", (float)cur / DOPPLER_SCALE);
-        g_lastDoppler = cur;
-        return;
-    }
-    if (!IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)
-        && *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0) {
-        return;
-    }
-    if (want != g_lastDoppler) {
-        *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
-        g_lastDoppler = want;
     }
 }
 

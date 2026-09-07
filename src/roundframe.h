@@ -9,6 +9,7 @@
  * GameUI.dll is mapped. */
 void RoundFrame_Init(HMODULE hOriginalGameUI);
 void RoundFrame_SetDragValueLabel(void *label, int restX, int restY);
+void RoundFrame_PaintOptionsSlider(void *slider);
 
 /* One pill for every Options toggle (Advanced is the source). */
 #define OPTIONS_TOGGLE_TRACK_W 36

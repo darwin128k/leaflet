@@ -483,15 +483,42 @@ static int IsCvarSlider(void *thisPtr)
     return vt == (void *)(g_gameUiBase + RVA_CCVARSLIDER_VTABLE);
 }
 
-/* Stock CCvarSlider range is min/max * 100. This GameUI then writes the
- * float with Cvar_SetValue, so host_writeconfig dumps "%f" junk (3.020000).
- * NextClient formats "%.2f" via Cvar_Set; GoldSrc mouse UI shows "%.1f".
- * Snap the integer so a wide track still hits those steps, then write a
- * short string through ClientCmd. */
+static const char *CvarSliderCvarName(void *thisPtr)
+{
+    const char *cvar;
+    if (thisPtr == NULL || IsBadReadPtr((char *)thisPtr + OFF_CCVAR_NAME, 2)) {
+        return "";
+    }
+    cvar = (const char *)thisPtr + OFF_CCVAR_NAME;
+    if (cvar[0] == '\0') {
+        return "";
+    }
+    return cvar;
+}
+
+/* Only the Options float sliders Valve created in C++ (scale 100, "%.2f"
+ * except mouse which the stock UI prints as "%.1f"). Color sliders on
+ * Multiplayer and any factory leftover keep the original ApplyChanges. */
+static int IsStockFloatCvarSlider(void *thisPtr)
+{
+    const char *cvar;
+    if (!IsCvarSlider(thisPtr)) {
+        return 0;
+    }
+    cvar = CvarSliderCvarName(thisPtr);
+    return lstrcmpiA(cvar, "volume") == 0
+        || lstrcmpiA(cvar, "mp3volume") == 0
+        || lstrcmpiA(cvar, "suitvolume") == 0
+        || lstrcmpiA(cvar, "al_doppler") == 0
+        || lstrcmpiA(cvar, "brightness") == 0
+        || lstrcmpiA(cvar, "gamma") == 0
+        || lstrcmpiA(cvar, "sensitivity") == 0
+        || lstrcmpiA(cvar, "voice_scale") == 0;
+}
+
 static int SliderStepFor(void *thisPtr)
 {
-    const char *name = PanelName(thisPtr);
-    if (lstrcmpiA(name, "Slider") == 0) {
+    if (lstrcmpiA(CvarSliderCvarName(thisPtr), "sensitivity") == 0) {
         return 10;
     }
     return 1;
@@ -504,7 +531,8 @@ static void SnapCvarSlider(void *thisPtr)
     int val;
     int step;
     int q;
-    if (!IsCvarSlider(thisPtr) || IsBadWritePtr((char *)thisPtr + OFF_SLIDER_VALUE, 4)) {
+    if (!IsStockFloatCvarSlider(thisPtr)
+        || IsBadWritePtr((char *)thisPtr + OFF_SLIDER_VALUE, 4)) {
         return;
     }
     minv = *(int *)((char *)thisPtr + OFF_SLIDER_MIN);
@@ -527,9 +555,6 @@ static void SnapCvarSlider(void *thisPtr)
         q = maxv;
     }
     *(int *)((char *)thisPtr + OFF_SLIDER_VALUE) = q;
-    if (!IsBadWritePtr((char *)thisPtr + OFF_SLIDER_NOBSIZE, 4)) {
-        *(float *)((char *)thisPtr + OFF_SLIDER_NOBSIZE) = 16.0f;
-    }
 }
 
 static void EngineClientCmd(const char *cmd)
@@ -565,6 +590,12 @@ static void __fastcall CvarSliderApply_Hook(void *thisPtr)
     char num[32];
     char cmd[96];
     const char *cvar;
+    if (!IsStockFloatCvarSlider(thisPtr)) {
+        if (g_origCvarSliderApply != NULL) {
+            g_origCvarSliderApply(thisPtr);
+        }
+        return;
+    }
     if (thisPtr == NULL || IsBadReadPtr((char *)thisPtr + OFF_CCVAR_MODIFIED, 1)) {
         return;
     }
@@ -578,8 +609,8 @@ static void __fastcall CvarSliderApply_Hook(void *thisPtr)
     f = (float)ival / 100.0f;
     *(float *)((char *)thisPtr + OFF_CCVAR_STARTF) = f;
     *(float *)((char *)thisPtr + OFF_CCVAR_CURF) = f;
-    cvar = (const char *)thisPtr + OFF_CCVAR_NAME;
-    if (IsBadReadPtr(cvar, 2) || cvar[0] == '\0') {
+    cvar = CvarSliderCvarName(thisPtr);
+    if (cvar[0] == '\0') {
         return;
     }
     step = SliderStepFor(thisPtr);
@@ -1054,6 +1085,9 @@ static void DrawValueSlider(void *thisPtr)
 
     if (g_GetSize == NULL || thisPtr == NULL) {
         return;
+    }
+    if (!IsBadWritePtr((char *)thisPtr + OFF_SLIDER_NOBSIZE, 4)) {
+        *(float *)((char *)thisPtr + OFF_SLIDER_NOBSIZE) = 16.0f;
     }
     g_GetSize(thisPtr, &w, &h);
     if (w < 32 || h < 12) {

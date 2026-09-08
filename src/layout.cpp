@@ -87,6 +87,7 @@ static void InstallBasePanelLayoutHook(BYTE *base);
 static void InstallPropertySheetLayoutHook(BYTE *base);
 static void InstallAdvancedOptionsTab(BYTE *base);
 static void InstallPanelListPaddingHook(BYTE *base);
+static void ForceSchemeLogoSize(const char *path, int wide, int tall);
 
 #define RVA_COPTIONSSUBVIDEO_VTABLE 0x0009c58cu
 #define VT_PERFORMLAYOUT_INDEX 111
@@ -416,6 +417,8 @@ static void LayoutCaption(void *page, const char *name, int x, int y, int w, int
     }
 }
 
+#define OFF_IMAGEPANEL_SCALEIMAGE 0x80 /* ImagePanel::m_bScaleImage; ApplySettings writes [esi+0x80] */
+
 static void LayoutNamedAll(void *page, const char *name, int x, int y, int w, int h)
 {
     int n;
@@ -432,6 +435,36 @@ static void LayoutNamedAll(void *page, const char *name, int x, int y, int w, in
         void *child = g_GetChild(page, i);
         if (child == NULL || lstrcmpiA(LayoutPanelName(child), name) != 0) {
             continue;
+        }
+        g_SetPos(child, x, y);
+        if (w > 0 && h > 0) {
+            g_SetSize(child, w, h);
+        }
+    }
+}
+
+static void LayoutMicMeter(void *page, int x, int y, int w, int h)
+{
+    int n;
+    int i;
+    if (page == NULL) {
+        return;
+    }
+    if (g_GetChildCount == NULL || g_GetChild == NULL) {
+        LayoutNamed(page, "MicMeter", x, y, w, h);
+        return;
+    }
+    n = g_GetChildCount(page);
+    if (n < 0 || n > 64) {
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        void *child = g_GetChild(page, i);
+        if (child == NULL || lstrcmpiA(LayoutPanelName(child), "MicMeter") != 0) {
+            continue;
+        }
+        if (!IsBadWritePtr((char *)child + OFF_IMAGEPANEL_SCALEIMAGE, 1)) {
+            *((unsigned char *)child + OFF_IMAGEPANEL_SCALEIMAGE) = 1;
         }
         g_SetPos(child, x, y);
         if (w > 0 && h > 0) {
@@ -577,17 +610,17 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     }
     FitVoiceSliderRow(page, "Transmit label", tx, pad, y, labelW, rightX, trackW,
                       labelH, sliderH);
-    y += sliderH + 6;
-    LayoutNamedAll(page, "MicMeter", rightX, y, trackW, 28);
-    y += 32;
-    LayoutNamed(page, "TestMicrophone", rightX, y, trackW, rowH);
-    y += rowH + 12;
-
+    y += sliderH + 8;
     FitVoiceSliderRow(page, "Label1", LayoutFindChild(page, "VoiceReceive"),
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
-    y += sliderH + 10;
+    y += sliderH + 8;
     FitVoiceSliderRow(page, "NoiseGateLabel", LayoutFindChild(page, "NoiseGate"),
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
+    y += sliderH + 10;
+
+    LayoutMicMeter(page, rightX, y, trackW, 28);
+    y += 32;
+    LayoutNamed(page, "TestMicrophone", rightX, y, trackW, rowH);
 
     LayoutNamed(page, "MilesVoiceLabel", -4000, -4000, 1, 1);
 }

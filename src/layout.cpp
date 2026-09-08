@@ -636,10 +636,13 @@ static void FitVoicePage(void *page, int pageW, int pageH)
         int vuH;
         int vuW;
         int vuX;
-        if (testY < y + 72) {
-            testY = y + 72;
+        int vuY;
+        int btnW;
+        int btnX;
+        if (testY < y + 80) {
+            testY = y + 80;
         }
-        vuH = testY - 6 - y;
+        vuH = testY - 12 - y;
         if (vuH > 96) {
             vuH = 96;
         }
@@ -659,10 +662,20 @@ static void FitVoicePage(void *page, int pageW, int pageH)
         if (vuH * 2 > vuW) {
             vuH = vuW / 2;
         }
+        /* Sit the meter just above the button, not flush under the sliders. */
+        vuY = testY - 10 - vuH;
+        if (vuY < y + 10) {
+            vuY = y + 10;
+        }
         vuX = pad + (innerW - vuW) / 2;
-        LayoutMicMeter(page, vuX, y, vuW, vuH);
-        RoundFrame_NoteVoiceTrackW(trackW);
-        LayoutNamed(page, "TestMicrophone", rightX, testY, trackW, rowH);
+        btnW = vuW + 12;
+        if (btnW > innerW) {
+            btnW = innerW;
+        }
+        btnX = pad + (innerW - btnW) / 2;
+        LayoutMicMeter(page, vuX, vuY, vuW, vuH);
+        RoundFrame_NoteVoiceTrackW(btnW);
+        LayoutNamed(page, "TestMicrophone", btnX, testY, btnW, rowH);
     }
 
     LayoutNamed(page, "MilesVoiceLabel", -4000, -4000, 1, 1);

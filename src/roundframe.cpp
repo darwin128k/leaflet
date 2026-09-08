@@ -2,6 +2,7 @@
 #include "scheme.h"
 #include "log.h"
 #include "audioextra.h"
+#include "bgswitch.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -184,6 +185,14 @@ static int g_dragValueRestY = 0;
 static int g_vuLiveW = 0;
 static int g_vuLiveHold = 0;
 static int g_voiceTrackW = 0;
+
+#define VU_FACE_MAX_W 256
+#define VU_FACE_MAX_H 128
+static unsigned char g_vuFaceBgra[VU_FACE_MAX_W * VU_FACE_MAX_H * 4];
+static int g_vuFaceW = 0;
+static int g_vuFaceH = 0;
+static int g_vuFaceLoaded = 0;
+static int g_vuFaceTried = 0;
 
 /* Captured from the main-body fill inside DrawFilledRect_Hook so
  * RunRoundedBackground can trace a stroke around the exact same rounded
@@ -2838,38 +2847,160 @@ static void __fastcall CrosshairPaint_Hook(void *thisPtr)
     *gap = oldGap;
 }
 
-static void DrawVuDot(int x, int y, uint32_t rgb)
+static float DistPointToSeg(float px, float py, float x0, float y0, float x1, float y1, float *outT)
 {
-    unsigned int packed = ThemeRgbPacked(rgb);
-    SurfaceFill(x, y, x + 2, y + 2, packed);
+    float vx = x1 - x0;
+    float vy = y1 - y0;
+    float wx = px - x0;
+    float wy = py - y0;
+    float c2 = vx * vx + vy * vy;
+    float t;
+    float dx;
+    float dy;
+
+    if (c2 < 0.0001f) {
+        if (outT != NULL) {
+            *outT = 0.0f;
+        }
+        return sqrtf(wx * wx + wy * wy);
+    }
+    t = (vx * wx + vy * wy) / c2;
+    if (t < 0.0f) {
+        t = 0.0f;
+    }
+    if (t > 1.0f) {
+        t = 1.0f;
+    }
+    if (outT != NULL) {
+        *outT = t;
+    }
+    dx = px - (x0 + t * vx);
+    dy = py - (y0 + t * vy);
+    return sqrtf(dx * dx + dy * dy);
 }
 
-static void DrawVuLine(int x0, int y0, int x1, int y1, uint32_t rgb)
+static int LoadVuFaceTga(void)
 {
-    int dx = x1 - x0;
-    int dy = y1 - y0;
-    int ax = dx < 0 ? -dx : dx;
-    int ay = dy < 0 ? -dy : dy;
-    int sx = dx < 0 ? -1 : 1;
-    int sy = dy < 0 ? -1 : 1;
-    int err = ax - ay;
-    int x = x0;
-    int y = y0;
-    int n = ax + ay + 2;
-    while (n-- > 0) {
-        DrawVuDot(x, y, rgb);
-        if (x == x1 && y == y1) {
-            break;
+    const char *root;
+    char path[MAX_PATH];
+    FILE *f;
+    unsigned char hdr[18];
+    int w;
+    int h;
+    int y0;
+    int y1;
+    size_t nbytes;
+    unsigned char row[VU_FACE_MAX_W * 4];
+
+    if (g_vuFaceTried) {
+        return g_vuFaceLoaded;
+    }
+    g_vuFaceTried = 1;
+    root = BgSwitch_GetGameRoot();
+    if (root == NULL || root[0] == '\0') {
+        return 0;
+    }
+    _snprintf(path, sizeof(path), "%s\\cstrike\\resource\\mic_meter_dead.tga", root);
+    f = fopen(path, "rb");
+    if (f == NULL) {
+        _snprintf(path, sizeof(path), "%s\\valve\\resource\\mic_meter_dead.tga", root);
+        f = fopen(path, "rb");
+    }
+    if (f == NULL) {
+        HookLog("VU face: tga not found");
+        return 0;
+    }
+    if (fread(hdr, 1, 18, f) != 18 || hdr[2] != 2 || hdr[16] != 32) {
+        fclose(f);
+        return 0;
+    }
+    w = (int)hdr[12] | ((int)hdr[13] << 8);
+    h = (int)hdr[14] | ((int)hdr[15] << 8);
+    if (w < 8 || h < 4 || w > VU_FACE_MAX_W || h > VU_FACE_MAX_H) {
+        fclose(f);
+        return 0;
+    }
+    nbytes = (size_t)w * (size_t)h * 4u;
+    if (fread(g_vuFaceBgra, 1, nbytes, f) != nbytes) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    /* File is bottom-up (descriptor bit 5 clear). Flip to top-down for blit. */
+    if ((hdr[17] & 0x20) == 0) {
+        for (y0 = 0, y1 = h - 1; y0 < y1; y0++, y1--) {
+            memcpy(row, g_vuFaceBgra + (size_t)y0 * (size_t)w * 4u, (size_t)w * 4u);
+            memcpy(g_vuFaceBgra + (size_t)y0 * (size_t)w * 4u,
+                   g_vuFaceBgra + (size_t)y1 * (size_t)w * 4u, (size_t)w * 4u);
+            memcpy(g_vuFaceBgra + (size_t)y1 * (size_t)w * 4u, row, (size_t)w * 4u);
         }
-        {
-            int e2 = err * 2;
-            if (e2 > -ay) {
-                err -= ay;
-                x += sx;
+    }
+    g_vuFaceW = w;
+    g_vuFaceH = h;
+    g_vuFaceLoaded = 1;
+    HookLog("VU face: loaded %dx%d with alpha from %s", w, h, path);
+    return 1;
+}
+
+static void DrawVuFace(int panelW, int panelH)
+{
+    int x;
+    int y;
+
+    if (!LoadVuFaceTga() || panelW <= 0 || panelH <= 0) {
+        return;
+    }
+    for (y = 0; y < panelH; y++) {
+        int sy = (g_vuFaceH * y) / panelH;
+        for (x = 0; x < panelW; x++) {
+            unsigned char *p;
+            int a;
+            uint32_t rgb;
+            int sx = (g_vuFaceW * x) / panelW;
+            p = g_vuFaceBgra + ((size_t)sy * (size_t)g_vuFaceW + (size_t)sx) * 4u;
+            a = (int)p[3];
+            if (a < 12) {
+                continue;
             }
-            if (e2 < ax) {
-                err += ax;
-                y += sy;
+            rgb = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
+            if (a >= 248) {
+                SurfaceFill(x, y, x + 1, y + 1, ThemeRgbPacked(rgb));
+            } else {
+                SurfaceFill(x, y, x + 1, y + 1,
+                            MixRgbPair(rgb, g_theme.windowRgb, (float)a / 255.0f));
+            }
+        }
+    }
+}
+
+static void DrawAaNeedle(float x0, float y0, float x1, float y1, uint32_t rgb)
+{
+    /* Opaque pixels only. AA used to mix into a dark face color, which drew a
+     * halo on the red hub instead of merging with it. */
+    int minx;
+    int maxx;
+    int miny;
+    int maxy;
+    int px;
+    int py;
+
+    minx = (int)(x0 < x1 ? x0 : x1) - 4;
+    maxx = (int)(x0 > x1 ? x0 : x1) + 4;
+    miny = (int)(y0 < y1 ? y0 : y1) - 4;
+    maxy = (int)(y0 > y1 ? y0 : y1) + 4;
+    if (minx < 0) {
+        minx = 0;
+    }
+    if (miny < 0) {
+        miny = 0;
+    }
+    for (py = miny; py <= maxy; py++) {
+        for (px = minx; px <= maxx; px++) {
+            float t = 0.0f;
+            float dist = DistPointToSeg((float)px + 0.5f, (float)py + 0.5f, x0, y0, x1, y1, &t);
+            float half = 1.55f * (1.0f - t) + 0.62f * t;
+            if (dist <= half) {
+                SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(rgb));
             }
         }
     }
@@ -2881,12 +3012,12 @@ static void DrawVuNeedle(int w, int h, float level)
     const float a1 = 0.5235988f;
     const uint32_t peakRgb = 0xD42020u;
     /* Pivot and length match the analog VU TGA (2:1 face, hub below the scale). */
-    int cx = w / 2 - 1;
-    int cy = (int)((float)h * 0.755f + 0.5f);
-    int r = (int)((float)h * 0.545f + 0.5f);
-    int nx;
-    int ny;
+    float cx = (float)(w / 2 - 1) + 0.5f;
+    float cy = (float)h * 0.821f;
+    float rad = (float)h * 0.547f;
     float a;
+    float nx;
+    float ny;
 
     if (level < 0.0f) {
         level = 0.0f;
@@ -2894,15 +3025,13 @@ static void DrawVuNeedle(int w, int h, float level)
     if (level > 1.0f) {
         level = 1.0f;
     }
-    if (r < 18) {
-        r = 18;
+    if (rad < 18.0f) {
+        rad = 18.0f;
     }
     a = a0 + level * (a1 - a0);
-    nx = cx + (int)(cosf(a) * (float)(r - 4) + 0.5f);
-    ny = cy - (int)(sinf(a) * (float)(r - 4) + 0.5f);
-    DrawVuLine(cx, cy, nx, ny, peakRgb);
-    DrawVuLine(cx + 1, cy, nx, ny, peakRgb);
-    DrawVuLine(cx, cy + 1, nx, ny, peakRgb);
+    nx = cx + cosf(a) * (rad - 4.0f);
+    ny = cy - sinf(a) * (rad - 4.0f);
+    DrawAaNeedle(cx, cy, nx, ny, peakRgb);
 }
 
 static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
@@ -2946,7 +3075,11 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
         if (level < 0.0f) {
             level = (float)g_vuLiveW / 160.0f;
         }
-        if (g_origImagePanelPaintBg != NULL) {
+        /* Stock ImagePanel treats the TGA as opaque RGB (black corners).
+         * Blit 32-bit alpha ourselves so A=0 shows the page behind. */
+        if (LoadVuFaceTga()) {
+            DrawVuFace(w, h);
+        } else if (g_origImagePanelPaintBg != NULL) {
             g_origImagePanelPaintBg(thisPtr);
         }
         DrawVuNeedle(w, h, level);

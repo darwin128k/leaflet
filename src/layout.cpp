@@ -664,7 +664,7 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     {
         int testY = pageH - pad - rowH;
         int vuW = 192;
-        int vuH = 96;
+        int vuH = 86;
         int vuGap = 8;
         int pairW;
         int vuX;

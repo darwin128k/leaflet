@@ -2881,8 +2881,8 @@ static void DrawVuNeedle(int w, int h, float level)
     const float a1 = 0.5235988f;
     const uint32_t peakRgb = 0xD42020u;
     /* Pivot and length match the analog VU TGA (2:1 face, hub below the scale). */
-    int cx = w / 2;
-    int cy = (int)((float)h * 0.737f + 0.5f);
+    int cx = w / 2 - 1;
+    int cy = (int)((float)h * 0.755f + 0.5f);
     int r = (int)((float)h * 0.545f + 0.5f);
     int nx;
     int ny;
@@ -2910,37 +2910,48 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
     int w = 0, h = 0;
     float level;
 
-    if (thisPtr == NULL || lstrcmpiA(PanelName(thisPtr), "MicMeter") != 0) {
+    if (thisPtr == NULL) {
         if (g_origImagePanelPaintBg != NULL) {
             g_origImagePanelPaintBg(thisPtr);
         }
         return;
     }
-    if (g_GetSize == NULL) {
+    {
+        const char *nm = PanelName(thisPtr);
+        int isL = lstrcmpiA(nm, "MicMeterL") == 0;
+        int isR = lstrcmpiA(nm, "MicMeterR") == 0;
+        if (!isL && !isR && lstrcmpiA(nm, "MicMeter") != 0) {
+            if (g_origImagePanelPaintBg != NULL) {
+                g_origImagePanelPaintBg(thisPtr);
+            }
+            return;
+        }
+        if (g_GetSize == NULL) {
+            return;
+        }
+        g_GetSize(thisPtr, &w, &h);
+        if (w < 8 || h < 4) {
+            return;
+        }
+        EnsureSurfaceHooks();
+        if (!isL && !isR) {
+            /* Stock live overlay: GameUI sets wide to 0..160 from speaking volume. */
+            if (w <= 160) {
+                g_vuLiveW = w;
+                g_vuLiveHold = 3;
+            }
+            return;
+        }
+        level = AudioExtra_VuLevel(isR);
+        if (level < 0.0f) {
+            level = (float)g_vuLiveW / 160.0f;
+        }
+        if (g_origImagePanelPaintBg != NULL) {
+            g_origImagePanelPaintBg(thisPtr);
+        }
+        DrawVuNeedle(w, h, level);
         return;
     }
-    g_GetSize(thisPtr, &w, &h);
-    if (w < 8 || h < 4) {
-        return;
-    }
-    EnsureSurfaceHooks();
-    /* Live overlay: GameUI sets wide to 0..160 from speaking volume. */
-    /* GameUI live overlay is 0..160 wide. Dead face is >= 180. */
-    if (w <= 160) {
-        g_vuLiveW = w;
-        g_vuLiveHold = 3;
-        return;
-    }
-    if (g_vuLiveHold > 0) {
-        g_vuLiveHold--;
-    } else {
-        g_vuLiveW = 0;
-    }
-    level = (float)g_vuLiveW / 160.0f;
-    if (g_origImagePanelPaintBg != NULL) {
-        g_origImagePanelPaintBg(thisPtr);
-    }
-    DrawVuNeedle(w, h, level);
 }
 
 static void __fastcall PaintBorder_Hook(void *thisPtr)

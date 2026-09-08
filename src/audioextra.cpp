@@ -716,6 +716,24 @@ void AudioExtra_BindVoicePage(void *voicePage)
     }
 }
 
+float AudioExtra_VuLevel(int right)
+{
+    const char *name = right ? "mv_vu_r" : "mv_vu_l";
+    float v;
+
+    if (!CvarExists(name)) {
+        return -1.0f;
+    }
+    v = CvarGet(name);
+    if (v < 0.0f) {
+        v = 0.0f;
+    }
+    if (v > 1.0f) {
+        v = 1.0f;
+    }
+    return v;
+}
+
 void AudioExtra_BindPage(void *audioPage)
 {
     if (audioPage == NULL) {

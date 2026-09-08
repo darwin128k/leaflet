@@ -443,6 +443,36 @@ static void LayoutNamedAll(void *page, const char *name, int x, int y, int w, in
     }
 }
 
+static void LayoutVoiceMeter(void *page, const char *name, int x, int y, int w, int h)
+{
+    int n;
+    int i;
+    if (page == NULL || name == NULL) {
+        return;
+    }
+    if (g_GetChildCount == NULL || g_GetChild == NULL) {
+        LayoutNamed(page, name, x, y, w, h);
+        return;
+    }
+    n = g_GetChildCount(page);
+    if (n < 0 || n > 64) {
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        void *child = g_GetChild(page, i);
+        if (child == NULL || lstrcmpiA(LayoutPanelName(child), name) != 0) {
+            continue;
+        }
+        if (!IsBadWritePtr((char *)child + OFF_IMAGEPANEL_SCALEIMAGE, 1)) {
+            *((unsigned char *)child + OFF_IMAGEPANEL_SCALEIMAGE) = 0;
+        }
+        g_SetPos(child, x, y);
+        if (w > 0 && h > 0) {
+            g_SetSize(child, w, h);
+        }
+    }
+}
+
 static void LayoutMicMeter(void *page, int x, int y, int w, int h)
 {
     int n;
@@ -635,6 +665,8 @@ static void FitVoicePage(void *page, int pageW, int pageH)
         int testY = pageH - pad - rowH;
         int vuW = 192;
         int vuH = 96;
+        int vuGap = 8;
+        int pairW;
         int vuX;
         int vuY;
         int btnW;
@@ -642,18 +674,24 @@ static void FitVoicePage(void *page, int pageW, int pageH)
         if (testY < y + vuH + 20) {
             testY = y + vuH + 20;
         }
-        /* Sit the meter just above the button, not flush under the sliders. */
+        pairW = vuW * 2 + vuGap;
+        /* Sit the meters just above the button, not flush under the sliders. */
         vuY = testY - 10 - vuH;
         if (vuY < y + 10) {
             vuY = y + 10;
         }
-        vuX = pad + (innerW - vuW) / 2;
-        btnW = vuW + 12;
+        vuX = pad + (innerW - pairW) / 2;
+        if (vuX < pad) {
+            vuX = pad;
+        }
+        btnW = 204;
         if (btnW > innerW) {
             btnW = innerW;
         }
         btnX = pad + (innerW - btnW) / 2;
-        LayoutMicMeter(page, vuX, vuY, vuW, vuH);
+        LayoutNamed(page, "MicMeter", -4000, -4000, 1, 1);
+        LayoutVoiceMeter(page, "MicMeterL", vuX, vuY, vuW, vuH);
+        LayoutVoiceMeter(page, "MicMeterR", vuX + vuW + vuGap, vuY, vuW, vuH);
         RoundFrame_NoteVoiceTrackW(btnW);
         LayoutNamed(page, "TestMicrophone", btnX, testY, btnW, rowH);
     }

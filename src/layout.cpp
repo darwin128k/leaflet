@@ -517,51 +517,78 @@ static void FitAudioPage(void *page, int pageW, int pageH)
     AudioExtra_BindPage(page);
 }
 
+static void FitVoiceSliderRow(void *page, const char *caption, void *slider,
+    int pad, int y, int labelW, int rightX, int trackW, int labelH, int sliderH)
+{
+    int capY = y + (sliderH - labelH) / 2;
+    if (capY < y) {
+        capY = y;
+    }
+    LayoutCaption(page, caption, pad, capY, labelW, labelH);
+    if (slider != NULL) {
+        g_SetPos(slider, rightX, y);
+        g_SetSize(slider, trackW, sliderH);
+    }
+}
+
 static void FitVoicePage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
     const int rowH = OPTIONS_TOGGLE_ROW_H;
-    int colW;
-    int leftX;
+    const int labelH = 20;
+    const int sliderH = 40;
+    int innerW;
+    int trackW;
     int rightX;
+    int labelW;
     int y;
     void *tx;
+    (void)pageH;
     if (page == NULL || LayoutFindChild(page, "voice_modenable") == NULL) {
         return;
     }
-    colW = (pageW - pad * 3) / 2;
-    if (colW < 140) {
-        colW = pageW - pad * 2;
+    innerW = pageW - pad * 2;
+    trackW = innerW / 2;
+    if (trackW < 160) {
+        trackW = 160;
     }
-    leftX = pad;
-    rightX = pad + colW + pad;
-    if (rightX + 80 > pageW) {
-        rightX = pad;
+    if (trackW > 240) {
+        trackW = 240;
     }
-    y = pad;
-    LayoutNamed(page, "voice_modenable", pad, y, pageW - pad * 2, rowH);
+    if (trackW > innerW - 120) {
+        trackW = innerW - 120;
+    }
+    rightX = pad + innerW - trackW;
+    labelW = rightX - pad - 10;
+    if (labelW < 80) {
+        labelW = 80;
+    }
     AudioExtra_BindVoicePage(page);
-    y += rowH + 14;
-    LayoutNamed(page, "Transmit label", leftX, y, colW, 20);
-    LayoutNamed(page, "Label1", rightX, y, colW, 20);
-    y += 22;
+
+    y = pad;
+    LayoutNamed(page, "voice_modenable", pad, y, innerW, rowH);
+    y += rowH + 8;
+    LayoutNamed(page, "MicBoost", pad, y, innerW, rowH);
+    y += rowH + 12;
+
     tx = LayoutFindChild(page, "#GameUI_MicrophoneVolume");
     if (tx == NULL) {
         tx = LayoutFindChild(page, "Microphone Volume");
     }
-    if (tx != NULL) {
-        g_SetPos(tx, leftX, y);
-        g_SetSize(tx, colW, 48);
-    }
-    LayoutNamed(page, "VoiceReceive", rightX, y, colW, 48);
-    y += 56;
-    LayoutNamedAll(page, "MicMeter", leftX, y, colW, 32);
-    LayoutCaption(page, "NoiseGateLabel", rightX, y - 2, colW, 20);
-    LayoutNamed(page, "NoiseGate", rightX, y + 18, colW, 48);
-    y += 56;
-    LayoutNamed(page, "TestMicrophone", leftX, y, 160, 24);
-    y += 36;
-    LayoutNamed(page, "MicBoost", pad, y, pageW - pad * 2, rowH);
+    FitVoiceSliderRow(page, "Transmit label", tx, pad, y, labelW, rightX, trackW,
+                      labelH, sliderH);
+    y += sliderH + 6;
+    LayoutNamedAll(page, "MicMeter", rightX, y, trackW, 28);
+    y += 32;
+    LayoutNamed(page, "TestMicrophone", rightX, y, trackW, rowH);
+    y += rowH + 12;
+
+    FitVoiceSliderRow(page, "Label1", LayoutFindChild(page, "VoiceReceive"),
+                      pad, y, labelW, rightX, trackW, labelH, sliderH);
+    y += sliderH + 10;
+    FitVoiceSliderRow(page, "NoiseGateLabel", LayoutFindChild(page, "NoiseGate"),
+                      pad, y, labelW, rightX, trackW, labelH, sliderH);
+
     LayoutNamed(page, "MilesVoiceLabel", -4000, -4000, 1, 1);
 }
 

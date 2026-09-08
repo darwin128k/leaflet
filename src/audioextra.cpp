@@ -9,6 +9,8 @@ typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
 typedef void(__thiscall *SetSizeFn)(void *self, int wide, int tall);
 typedef void *(__thiscall *FindChildByNameFn)(void *self, const char *name, int recurse);
 typedef void(__thiscall *SetVisibleFn)(void *self, unsigned char visible);
+typedef void(__thiscall *SetEnabledFn)(void *self, unsigned char enabled);
+typedef char(__thiscall *IsEnabledFn)(void *self);
 typedef char(__thiscall *IsSelectedFn)(void *self);
 typedef void *(*GetCvarPointerFn)(const char *name);
 typedef float (*GetCvarFloatFn)(const char *name);
@@ -27,6 +29,8 @@ typedef void(__thiscall *PaintFn)(void *self);
 #define CCVARSLIDER_SIZE    0x108
 #define VT_PAINT_INDEX      107
 #define OFF_SETVISIBLE_VT   0x74 /* Panel::SetVisible; CCvarSlider slot 0x70 is the deleting dtor */
+#define OFF_SETENABLED_VT   0xBC /* Panel::SetEnabled; COptionsSubVoice mic-test */
+#define OFF_ISENABLED_VT    0xC0
 #define OFF_BUTTON_ISSELECTED_VT 0x2b8
 #define OFF_PANEL_NAME      0x44
 #define OFF_CCVAR_NAME      0xC8 /* CCvarSlider::m_szCvarName; ctor lea edx,[esi+0xC8] */
@@ -301,6 +305,76 @@ static void *FindChild(void *page, const char *name)
     }
 }
 
+static int SliderPanelEnabled(void *panel)
+{
+    void **vt;
+    IsEnabledFn fn;
+    char on;
+
+    if (panel == NULL) {
+        return 1;
+    }
+    vt = *(void ***)panel;
+    if (vt == NULL) {
+        return 1;
+    }
+    fn = (IsEnabledFn)vt[OFF_ISENABLED_VT / sizeof(void *)];
+    if (fn == NULL) {
+        return 1;
+    }
+    on = 1;
+    __try {
+        on = fn(panel);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        on = 1;
+    }
+    return on != 0;
+}
+
+static void SetPanelEnabled(void *panel, int enabled)
+{
+    void **vt;
+    SetEnabledFn fn;
+
+    if (panel == NULL) {
+        return;
+    }
+    vt = *(void ***)panel;
+    if (vt == NULL) {
+        return;
+    }
+    fn = (SetEnabledFn)vt[OFF_SETENABLED_VT / sizeof(void *)];
+    if (fn == NULL) {
+        return;
+    }
+    __try {
+        fn(panel, enabled ? 1 : 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static void SyncNoiseGateEnabled(void)
+{
+    void *receive;
+    void *gate;
+    void *label;
+    int en;
+
+    if (g_voicePage == NULL) {
+        return;
+    }
+    receive = FindChild(g_voicePage, "VoiceReceive");
+    gate = FindChild(g_voicePage, "NoiseGate");
+    label = FindChild(g_voicePage, "NoiseGateLabel");
+    en = (receive == NULL) ? 1 : SliderPanelEnabled(receive);
+    if (gate != NULL) {
+        SetPanelEnabled(gate, en);
+    }
+    if (label != NULL) {
+        SetPanelEnabled(label, en);
+    }
+}
+
 static void HideNamed(void *page, const char *name)
 {
     void *c;
@@ -515,6 +589,11 @@ void AudioExtra_OnSliderPaint(void *slider)
         }
         if (cur > 100) {
             cur = 100;
+        }
+        if (!SliderPanelEnabled(slider)) {
+            *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+            g_gateDirty = 0;
+            return;
         }
         if (cur != want) {
             g_gateDirty = 1;
@@ -799,4 +878,5 @@ int AudioExtra_HasMetaAudio(void)
 
 void AudioExtra_Tick(void)
 {
+    SyncNoiseGateEnabled();
 }

@@ -105,6 +105,8 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define OFF_FRAME_CAPTION_BTNS    0xE8 /* first of five caption Button* (menu/min/max/tray/close) */
 #define FRAME_CAPTION_BTN_COUNT   5
 #define OFF_SETVISIBLE_VT         0x70 /* Panel::SetVisible(bool); IsVisible is 0x78 */
+#define OFF_SETENABLED_VT         0xBC /* Panel::SetEnabled(bool); GameUI mic-test uses this */
+#define OFF_ISENABLED_VT          0xC0
 #define IIMAGE_VT_PAINT           0
 #define IIMAGE_VT_SETPOS          1
 #define IIMAGE_VT_GETCONTENTSIZE  2
@@ -217,6 +219,7 @@ static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rg
 static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb);
 static int PillInset(int y, int h);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
+static int PanelIsEnabled(void *thisPtr);
 
 static unsigned int ThemeRgbPacked(uint32_t rgb)
 {
@@ -1117,11 +1120,13 @@ static void DrawToggleSwitch(void *thisPtr)
     if (y < 0) {
         y = 0;
     }
-    trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
+    trackRgb = (!PanelIsEnabled(thisPtr) || !on) ? g_theme.trackRgb : g_theme.accentRgb;
     DrawAaPillAt(x, y, trackW, trackH, trackRgb, g_theme.windowRgb);
     DrawAaDiskOnTrack(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
-                      SLIDER_KNOB_RGB, y, trackH, on ? (x + trackW) : x,
-                      g_theme.accentRgb, g_theme.trackRgb, g_theme.windowRgb);
+                      PanelIsEnabled(thisPtr) ? SLIDER_KNOB_RGB : g_theme.trackRgb, y, trackH,
+                      on ? (x + trackW) : x,
+                      PanelIsEnabled(thisPtr) ? g_theme.accentRgb : g_theme.mutedRgb,
+                      g_theme.trackRgb, g_theme.windowRgb);
 }
 
 /* Same SurfaceFill path as the track — no ISurface text (that crashed).
@@ -1335,6 +1340,32 @@ static int SliderIsDragging(void *thisPtr)
     return *((unsigned char *)thisPtr + OFF_SLIDER_DRAGGING) != 0;
 }
 
+static int PanelIsEnabled(void *thisPtr)
+{
+    void **vtable;
+    ByteGetterFn isEnabled;
+    char on;
+
+    if (thisPtr == NULL) {
+        return 1;
+    }
+    vtable = *(void ***)thisPtr;
+    if (vtable == NULL) {
+        return 1;
+    }
+    isEnabled = (ByteGetterFn)vtable[OFF_ISENABLED_VT / sizeof(void *)];
+    if (isEnabled == NULL) {
+        return 1;
+    }
+    on = 1;
+    __try {
+        on = isEnabled(thisPtr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        on = 1;
+    }
+    return on != 0;
+}
+
 static void DrawValueSlider(void *thisPtr)
 {
     int w = 0;
@@ -1405,113 +1436,122 @@ static void DrawValueSlider(void *thisPtr)
     tw = 0;
     capW = SLIDER_VALUE_CAPSULE_W;
     capH = SLIDER_VALUE_CAPSULE_H;
-    if (dragging) {
-        FormatSliderDragText(thisPtr, buf, (int)sizeof(buf));
-        tw = GlyphTextWidth(buf);
-    }
-    padX = knob / 2;
-    if (padX < 8) {
-        padX = 8;
-    }
-    if (w - padX * 2 < 16) {
-        padX = 4;
-    }
-    trackY = (h - trackH) / 2;
-    if (trackY < 0) {
-        trackY = 0;
-    }
-    if (trackY + ((knob > trackH) ? knob : trackH) > h) {
-        trackY = h - ((knob > trackH) ? knob : trackH);
+    {
+        int enabled = PanelIsEnabled(thisPtr);
+        uint32_t fillRgb = enabled ? g_theme.accentRgb : g_theme.mutedRgb;
+        uint32_t knobRgb = enabled ? SLIDER_KNOB_RGB : g_theme.trackRgb;
+        uint32_t dotRgb = enabled ? g_theme.accentRgb : g_theme.mutedRgb;
+
+        if (dragging && enabled) {
+            FormatSliderDragText(thisPtr, buf, (int)sizeof(buf));
+            tw = GlyphTextWidth(buf);
+        }
+        padX = knob / 2;
+        if (padX < 8) {
+            padX = 8;
+        }
+        if (w - padX * 2 < 16) {
+            padX = 4;
+        }
+        trackY = (h - trackH) / 2;
         if (trackY < 0) {
             trackY = 0;
         }
-    }
-    cx = (n0 + n1) / 2;
-    if (cx < padX || cx > w - padX || (n0 == 0 && n1 == 0)) {
-        float t = 0.0f;
-        if (maxv > minv) {
-            t = (float)(val - minv) / (float)(maxv - minv);
+        if (trackY + ((knob > trackH) ? knob : trackH) > h) {
+            trackY = h - ((knob > trackH) ? knob : trackH);
+            if (trackY < 0) {
+                trackY = 0;
+            }
         }
-        if (t < 0.0f) {
-            t = 0.0f;
+        cx = (n0 + n1) / 2;
+        if (cx < padX || cx > w - padX || (n0 == 0 && n1 == 0)) {
+            float t = 0.0f;
+            if (maxv > minv) {
+                t = (float)(val - minv) / (float)(maxv - minv);
+            }
+            if (t < 0.0f) {
+                t = 0.0f;
+            }
+            if (t > 1.0f) {
+                t = 1.0f;
+            }
+            cx = padX + (int)(t * (float)(w - padX * 2) + 0.5f);
         }
-        if (t > 1.0f) {
-            t = 1.0f;
+        if (cx < padX) {
+            cx = padX;
         }
-        cx = padX + (int)(t * (float)(w - padX * 2) + 0.5f);
-    }
-    if (cx < padX) {
-        cx = padX;
-    }
-    if (cx > w - padX) {
-        cx = w - padX;
-    }
-    DrawPillAt(padX, trackY, w - padX * 2, trackH, g_theme.trackRgb);
-    if (cx > padX) {
-        int tr = trackH / 2;
-        for (row = 0; row < trackH; row++) {
-            float inset = CornerInsetF(row, trackH, tr);
-            FillSpanSoftEnds(trackY + row, (float)padX + inset, (float)cx,
-                             g_theme.accentRgb, g_theme.windowRgb, g_theme.accentRgb);
+        if (cx > w - padX) {
+            cx = w - padX;
         }
-    }
-    if (dragging) {
-        knobX = cx - capW / 2;
-        knobY = trackY + (trackH - capH) / 2;
-        if (knobX < 0) {
-            knobX = 0;
+        DrawPillAt(padX, trackY, w - padX * 2, trackH, g_theme.trackRgb);
+        if (cx > padX) {
+            int tr = trackH / 2;
+            for (row = 0; row < trackH; row++) {
+                float inset = CornerInsetF(row, trackH, tr);
+                FillSpanSoftEnds(trackY + row, (float)padX + inset, (float)cx,
+                                 fillRgb, g_theme.windowRgb, fillRgb);
+            }
         }
-        if (knobX + capW > w) {
-            knobX = w - capW;
+        if (dragging && enabled) {
+            knobX = cx - capW / 2;
+            knobY = trackY + (trackH - capH) / 2;
             if (knobX < 0) {
                 knobX = 0;
             }
-        }
-        if (knobY < 0) {
-            knobY = 0;
-        }
-        if (knobY + capH > h) {
-            knobY = h - capH;
+            if (knobX + capW > w) {
+                knobX = w - capW;
+                if (knobX < 0) {
+                    knobX = 0;
+                }
+            }
             if (knobY < 0) {
                 knobY = 0;
             }
-        }
-        {
-            int cr = capH / 2;
-            for (row = 0; row < capH; row++) {
-                float inset = CornerInsetF(row, capH, cr);
-                int py = knobY + row;
-                uint32_t bgL = g_theme.windowRgb;
-                uint32_t bgR = g_theme.windowRgb;
-                if (py >= trackY && py < trackY + trackH) {
-                    bgL = g_theme.accentRgb;
-                    bgR = g_theme.trackRgb;
+            if (knobY + capH > h) {
+                knobY = h - capH;
+                if (knobY < 0) {
+                    knobY = 0;
                 }
-                FillSpanSoftEnds(py, (float)knobX + inset, (float)(knobX + capW) - inset,
-                                 g_theme.accentRgb, bgL, bgR);
             }
+            {
+                int cr = capH / 2;
+                for (row = 0; row < capH; row++) {
+                    float inset = CornerInsetF(row, capH, cr);
+                    int py = knobY + row;
+                    uint32_t bgL = g_theme.windowRgb;
+                    uint32_t bgR = g_theme.windowRgb;
+                    if (py >= trackY && py < trackY + trackH) {
+                        bgL = fillRgb;
+                        bgR = g_theme.trackRgb;
+                    }
+                    FillSpanSoftEnds(py, (float)knobX + inset, (float)(knobX + capW) - inset,
+                                     fillRgb, bgL, bgR);
+                }
+            }
+            if (buf[0] != '\0') {
+                int tx = knobX + (capW - tw) / 2;
+                int ty = knobY + (capH - 10) / 2;
+                DrawValueGlyphs(tx, ty, buf, ThemeRgbPacked(SLIDER_KNOB_RGB));
+            }
+        } else {
+            knobX = cx - knob / 2;
+            knobY = trackY + (trackH - knob) / 2;
+            if (knobX < 0) {
+                knobX = 0;
+            }
+            if (knobY < 0) {
+                knobY = 0;
+            }
+            DrawAaDiskOnTrack(knobX, knobY, knob, knobRgb, trackY, trackH, cx,
+                              fillRgb, g_theme.trackRgb, g_theme.windowRgb);
+            DrawAaDisk(knobX + (knob - SLIDER_KNOB_DOT) / 2,
+                       knobY + (knob - SLIDER_KNOB_DOT) / 2,
+                       SLIDER_KNOB_DOT, dotRgb, knobRgb);
         }
-        if (buf[0] != '\0') {
-            int tx = knobX + (capW - tw) / 2;
-            int ty = knobY + (capH - 10) / 2;
-            DrawValueGlyphs(tx, ty, buf, ThemeRgbPacked(SLIDER_KNOB_RGB));
+        if (enabled) {
+            UpdateSliderDragCursor(thisPtr, padX, w - padX, cx);
         }
-    } else {
-        knobX = cx - knob / 2;
-        knobY = trackY + (trackH - knob) / 2;
-        if (knobX < 0) {
-            knobX = 0;
-        }
-        if (knobY < 0) {
-            knobY = 0;
-        }
-        DrawAaDiskOnTrack(knobX, knobY, knob, SLIDER_KNOB_RGB, trackY, trackH, cx,
-                          g_theme.accentRgb, g_theme.trackRgb, g_theme.windowRgb);
-        DrawAaDisk(knobX + (knob - SLIDER_KNOB_DOT) / 2,
-                   knobY + (knob - SLIDER_KNOB_DOT) / 2,
-                   SLIDER_KNOB_DOT, g_theme.accentRgb, SLIDER_KNOB_RGB);
     }
-    UpdateSliderDragCursor(thisPtr, padX, w - padX, cx);
 }
 
 void RoundFrame_SetDragValueLabel(void *label, int restX, int restY)

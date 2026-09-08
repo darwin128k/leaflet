@@ -74,6 +74,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_PAINTBORDER           0x00043d40u
 #define RVA_FRAME_PAINTBG_ALT     0x00023970u
 #define RVA_PROGRESSBAR_PAINTBG   0x000696b0u /* vgui2::ProgressBar::PaintBackground — cube segments */
+#define RVA_IMAGEPANEL_PAINTBG    0x00072740u /* ImagePanel::PaintBackground — TGA / scaleImage */
 #define RVA_PROGRESSBAR_VTABLE    0x000a1dccu
 #define RVA_SLIDER_VTABLE         0x000a194cu /* vgui2::Slider */
 #define RVA_CCVARSLIDER_VTABLE    0x00097a3cu /* CCvarSlider : Slider */
@@ -137,6 +138,7 @@ static PaintFn g_origPaint18530 = NULL;
 static PaintFn g_origPaintBorder = NULL;
 static PaintFn g_origFramePaintBgAlt = NULL;
 static PaintFn g_origProgressPaintBg = NULL;
+static PaintFn g_origImagePanelPaintBg = NULL;
 static PaintFn g_origSliderPaint = NULL;
 static PaintFn g_origSliderPaintBg = NULL;
 static PaintFn g_origCvarSliderApply = NULL;
@@ -149,6 +151,7 @@ static BYTE g_paint18530Tramp[32];
 static BYTE g_paintBorderTramp[32];
 static BYTE g_framePaintBgAltTramp[32];
 static BYTE g_progressPaintBgTramp[32];
+static BYTE g_imagePanelPaintBgTramp[32];
 static BYTE g_sliderPaintTramp[32];
 static BYTE g_sliderPaintBgTramp[32];
 static BYTE g_cvarSliderApplyTramp[32];
@@ -178,6 +181,9 @@ static OverlayTheme g_theme;
 static void *g_dragValueLabel = NULL;
 static int g_dragValueRestX = 0;
 static int g_dragValueRestY = 0;
+static int g_vuLiveW = 0;
+static int g_vuLiveHold = 0;
+static int g_voiceTrackW = 0;
 
 /* Captured from the main-body fill inside DrawFilledRect_Hook so
  * RunRoundedBackground can trace a stroke around the exact same rounded
@@ -2572,6 +2578,16 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
     int tab;
     int tabHot;
 
+    if (thisPtr != NULL && g_voiceTrackW > 40
+        && lstrcmpiA(PanelName(thisPtr), "TestMicrophone") == 0
+        && g_SetSize != NULL && g_GetSize != NULL) {
+        int tw = 0, th = 0;
+        g_GetSize(thisPtr, &tw, &th);
+        if (tw != g_voiceTrackW || th != OPTIONS_TOGGLE_ROW_H) {
+            g_SetSize(thisPtr, g_voiceTrackW, OPTIONS_TOGGLE_ROW_H);
+        }
+    }
+
     if (IsTitleCloseButton(thisPtr)) {
         PaintMacCloseDot(thisPtr);
         return;
@@ -2665,6 +2681,13 @@ static void __fastcall FramePaintBgAlt_Hook(void *thisPtr)
 static void __fastcall SliderPaintBg_Hook(void *thisPtr)
 {
     (void)thisPtr;
+}
+
+void RoundFrame_NoteVoiceTrackW(int wide)
+{
+    if (wide > 40 && wide < 400) {
+        g_voiceTrackW = wide;
+    }
 }
 
 void RoundFrame_PaintOptionsSlider(void *slider)
@@ -2815,6 +2838,133 @@ static void __fastcall CrosshairPaint_Hook(void *thisPtr)
     *gap = oldGap;
 }
 
+static void DrawVuDot(int x, int y, uint32_t rgb)
+{
+    unsigned int packed = ThemeRgbPacked(rgb);
+    SurfaceFill(x, y, x + 2, y + 2, packed);
+}
+
+static void DrawVuLine(int x0, int y0, int x1, int y1, uint32_t rgb)
+{
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int ax = dx < 0 ? -dx : dx;
+    int ay = dy < 0 ? -dy : dy;
+    int sx = dx < 0 ? -1 : 1;
+    int sy = dy < 0 ? -1 : 1;
+    int err = ax - ay;
+    int x = x0;
+    int y = y0;
+    int n = ax + ay + 2;
+    while (n-- > 0) {
+        DrawVuDot(x, y, rgb);
+        if (x == x1 && y == y1) {
+            break;
+        }
+        {
+            int e2 = err * 2;
+            if (e2 > -ay) {
+                err -= ay;
+                x += sx;
+            }
+            if (e2 < ax) {
+                err += ax;
+                y += sy;
+            }
+        }
+    }
+}
+
+static void DrawMicVu(int w, int h, float level)
+{
+    const float a0 = 2.6179938f; /* 150 deg */
+    const float a1 = 0.5235988f; /* 30 deg */
+    int cx = w / 2;
+    int cy = h - 3;
+    int r;
+    int i;
+    int nx;
+    int ny;
+    float a;
+    uint32_t peakRgb = 0xC83C3Cu;
+
+    if (level < 0.0f) {
+        level = 0.0f;
+    }
+    if (level > 1.0f) {
+        level = 1.0f;
+    }
+    r = w / 2 - 6;
+    if (r > h - 8) {
+        r = h - 8;
+    }
+    if (r < 12) {
+        r = 12;
+    }
+    DrawAaPillAt(0, 0, w, h, g_theme.trackRgb, g_theme.windowRgb);
+
+    for (i = 0; i <= 24; i++) {
+        float t = (float)i / 24.0f;
+        float ang = a0 + t * (a1 - a0);
+        int inner = (i % 3 == 0) ? (r - 7) : (r - 4);
+        int xA = cx + (int)(cosf(ang) * (float)inner + 0.5f);
+        int yA = cy - (int)(sinf(ang) * (float)inner + 0.5f);
+        int xB = cx + (int)(cosf(ang) * (float)r + 0.5f);
+        int yB = cy - (int)(sinf(ang) * (float)r + 0.5f);
+        DrawVuLine(xA, yA, xB, yB, t >= 0.78f ? peakRgb : g_theme.mutedRgb);
+    }
+    for (i = 0; i <= 32; i++) {
+        float t = (float)i / 32.0f;
+        if (t > level) {
+            break;
+        }
+        a = a0 + t * (a1 - a0);
+        nx = cx + (int)(cosf(a) * (float)(r - 2) + 0.5f);
+        ny = cy - (int)(sinf(a) * (float)(r - 2) + 0.5f);
+        DrawVuDot(nx, ny, t >= 0.78f ? peakRgb : g_theme.accentRgb);
+    }
+    a = a0 + level * (a1 - a0);
+    nx = cx + (int)(cosf(a) * (float)(r - 3) + 0.5f);
+    ny = cy - (int)(sinf(a) * (float)(r - 3) + 0.5f);
+    DrawVuLine(cx, cy, nx, ny, SLIDER_KNOB_RGB);
+    DrawVuLine(cx + 1, cy, nx + 1, ny, SLIDER_KNOB_RGB);
+    DrawAaDisk(cx - 3, cy - 3, 6, SLIDER_KNOB_RGB, g_theme.trackRgb);
+}
+
+static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
+{
+    int w = 0, h = 0;
+    float level;
+
+    if (thisPtr == NULL || lstrcmpiA(PanelName(thisPtr), "MicMeter") != 0) {
+        if (g_origImagePanelPaintBg != NULL) {
+            g_origImagePanelPaintBg(thisPtr);
+        }
+        return;
+    }
+    if (g_GetSize == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 8 || h < 4) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    /* Live overlay: GameUI sets wide to 0..160 from speaking volume. */
+    if (w <= 168) {
+        g_vuLiveW = w;
+        g_vuLiveHold = 3;
+        return;
+    }
+    if (g_vuLiveHold > 0) {
+        g_vuLiveHold--;
+    } else {
+        g_vuLiveW = 0;
+    }
+    level = (float)g_vuLiveW / 160.0f;
+    DrawMicVu(w, h, level);
+}
+
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
     if (IsSettingsToggle(thisPtr)) {
@@ -2914,6 +3064,13 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
         InstallNearHook(base + RVA_PROGRESSBAR_PAINTBG, 6, kProgressBgPrologue,
                         g_progressPaintBgTramp, sizeof(g_progressPaintBgTramp),
                         (void *)ProgressPaintBg_Hook, &g_origProgressPaintBg, "ProgressBarPaintBackground");
+    }
+    {
+        static const BYTE kImageBgPrologue[6] = { 0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1 };
+        InstallNearHook(base + RVA_IMAGEPANEL_PAINTBG, 6, kImageBgPrologue,
+                        g_imagePanelPaintBgTramp, sizeof(g_imagePanelPaintBgTramp),
+                        (void *)ImagePanelPaintBg_Hook, &g_origImagePanelPaintBg,
+                        "ImagePanelPaintBackground");
     }
     {
         static const BYTE kSliderPaintPrologue[8] = { 0x56, 0x8B, 0xF1, 0xE8, 0x18, 0x00, 0x00, 0x00 };

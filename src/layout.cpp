@@ -468,7 +468,18 @@ static void LayoutMicMeter(void *page, int x, int y, int w, int h)
         }
         g_SetPos(child, x, y);
         if (w > 0 && h > 0) {
-            g_SetSize(child, w, h);
+            int cw = 0;
+            int ch = 0;
+            if (g_GetSize != NULL) {
+                g_GetSize(child, &cw, &ch);
+            }
+            /* Live overlay is shrunk to 0..160 by GameUI OnThink — don't
+             * stomp that with the full track width every layout pass. */
+            if (cw > 0 && cw < w - 8) {
+                g_SetSize(child, cw, h);
+            } else {
+                g_SetSize(child, w, h);
+            }
         }
     }
 }
@@ -618,8 +629,9 @@ static void FitVoicePage(void *page, int pageW, int pageH)
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
     y += sliderH + 10;
 
-    LayoutMicMeter(page, rightX, y, trackW, 28);
-    y += 32;
+    LayoutMicMeter(page, rightX, y, trackW, 56);
+    y += 60;
+    RoundFrame_NoteVoiceTrackW(trackW);
     LayoutNamed(page, "TestMicrophone", rightX, y, trackW, rowH);
 
     LayoutNamed(page, "MilesVoiceLabel", -4000, -4000, 1, 1);

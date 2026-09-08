@@ -1121,12 +1121,15 @@ static void DrawToggleSwitch(void *thisPtr)
         y = 0;
     }
     trackRgb = (!PanelIsEnabled(thisPtr) || !on) ? g_theme.trackRgb : g_theme.accentRgb;
+    if (!PanelIsEnabled(thisPtr) && on) {
+        trackRgb = g_theme.mutedRgb;
+    }
     DrawAaPillAt(x, y, trackW, trackH, trackRgb, g_theme.windowRgb);
+    /* Knob stays the light disk. Using trackRgb here made AA mix into the
+     * window color and left a dotted halo. */
     DrawAaDiskOnTrack(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
-                      PanelIsEnabled(thisPtr) ? SLIDER_KNOB_RGB : g_theme.trackRgb, y, trackH,
-                      on ? (x + trackW) : x,
-                      PanelIsEnabled(thisPtr) ? g_theme.accentRgb : g_theme.mutedRgb,
-                      g_theme.trackRgb, g_theme.windowRgb);
+                      SLIDER_KNOB_RGB, y, trackH, on ? (x + trackW) : x,
+                      trackRgb, g_theme.trackRgb, g_theme.windowRgb);
 }
 
 /* Same SurfaceFill path as the track — no ISurface text (that crashed).
@@ -1439,7 +1442,7 @@ static void DrawValueSlider(void *thisPtr)
     {
         int enabled = PanelIsEnabled(thisPtr);
         uint32_t fillRgb = enabled ? g_theme.accentRgb : g_theme.mutedRgb;
-        uint32_t knobRgb = enabled ? SLIDER_KNOB_RGB : g_theme.trackRgb;
+        uint32_t knobRgb = SLIDER_KNOB_RGB;
         uint32_t dotRgb = enabled ? g_theme.accentRgb : g_theme.mutedRgb;
 
         if (dragging && enabled) {

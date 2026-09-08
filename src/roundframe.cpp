@@ -2875,18 +2875,18 @@ static void DrawVuLine(int x0, int y0, int x1, int y1, uint32_t rgb)
     }
 }
 
-static void DrawMicVu(int w, int h, float level)
+static void DrawVuNeedle(int w, int h, float level)
 {
-    const float a0 = 2.6179938f; /* 150 deg */
-    const float a1 = 0.5235988f; /* 30 deg */
+    const float a0 = 2.6179938f;
+    const float a1 = 0.5235988f;
+    const uint32_t peakRgb = 0xD42020u;
+    /* Pivot and length match the analog VU TGA (2:1 face, hub below the scale). */
     int cx = w / 2;
-    int cy = h - 3;
-    int r;
-    int i;
+    int cy = (int)((float)h * 0.737f + 0.5f);
+    int r = (int)((float)h * 0.545f + 0.5f);
     int nx;
     int ny;
     float a;
-    uint32_t peakRgb = 0xC83C3Cu;
 
     if (level < 0.0f) {
         level = 0.0f;
@@ -2894,41 +2894,15 @@ static void DrawMicVu(int w, int h, float level)
     if (level > 1.0f) {
         level = 1.0f;
     }
-    r = w / 2 - 6;
-    if (r > h - 8) {
-        r = h - 8;
-    }
-    if (r < 12) {
-        r = 12;
-    }
-    DrawAaPillAt(0, 0, w, h, g_theme.trackRgb, g_theme.windowRgb);
-
-    for (i = 0; i <= 24; i++) {
-        float t = (float)i / 24.0f;
-        float ang = a0 + t * (a1 - a0);
-        int inner = (i % 3 == 0) ? (r - 7) : (r - 4);
-        int xA = cx + (int)(cosf(ang) * (float)inner + 0.5f);
-        int yA = cy - (int)(sinf(ang) * (float)inner + 0.5f);
-        int xB = cx + (int)(cosf(ang) * (float)r + 0.5f);
-        int yB = cy - (int)(sinf(ang) * (float)r + 0.5f);
-        DrawVuLine(xA, yA, xB, yB, t >= 0.78f ? peakRgb : g_theme.mutedRgb);
-    }
-    for (i = 0; i <= 32; i++) {
-        float t = (float)i / 32.0f;
-        if (t > level) {
-            break;
-        }
-        a = a0 + t * (a1 - a0);
-        nx = cx + (int)(cosf(a) * (float)(r - 2) + 0.5f);
-        ny = cy - (int)(sinf(a) * (float)(r - 2) + 0.5f);
-        DrawVuDot(nx, ny, t >= 0.78f ? peakRgb : g_theme.accentRgb);
+    if (r < 18) {
+        r = 18;
     }
     a = a0 + level * (a1 - a0);
-    nx = cx + (int)(cosf(a) * (float)(r - 3) + 0.5f);
-    ny = cy - (int)(sinf(a) * (float)(r - 3) + 0.5f);
-    DrawVuLine(cx, cy, nx, ny, SLIDER_KNOB_RGB);
-    DrawVuLine(cx + 1, cy, nx + 1, ny, SLIDER_KNOB_RGB);
-    DrawAaDisk(cx - 3, cy - 3, 6, SLIDER_KNOB_RGB, g_theme.trackRgb);
+    nx = cx + (int)(cosf(a) * (float)(r - 4) + 0.5f);
+    ny = cy - (int)(sinf(a) * (float)(r - 4) + 0.5f);
+    DrawVuLine(cx, cy, nx, ny, peakRgb);
+    DrawVuLine(cx + 1, cy, nx, ny, peakRgb);
+    DrawVuLine(cx, cy + 1, nx, ny, peakRgb);
 }
 
 static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
@@ -2951,7 +2925,8 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
     }
     EnsureSurfaceHooks();
     /* Live overlay: GameUI sets wide to 0..160 from speaking volume. */
-    if (w <= 168) {
+    /* GameUI live overlay is 0..160 wide. Dead face is >= 180. */
+    if (w <= 160) {
         g_vuLiveW = w;
         g_vuLiveHold = 3;
         return;
@@ -2962,7 +2937,10 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
         g_vuLiveW = 0;
     }
     level = (float)g_vuLiveW / 160.0f;
-    DrawMicVu(w, h, level);
+    if (g_origImagePanelPaintBg != NULL) {
+        g_origImagePanelPaintBg(thisPtr);
+    }
+    DrawVuNeedle(w, h, level);
 }
 
 static void __fastcall PaintBorder_Hook(void *thisPtr)

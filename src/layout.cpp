@@ -580,16 +580,18 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     const int pad = OPTIONS_INNER_PAD;
     const int rowH = OPTIONS_TOGGLE_ROW_H;
     const int labelH = 20;
-    const int sliderH = 40;
+    const int sliderH = 28;
     int innerW;
     int trackW;
     int rightX;
     int labelW;
     int y;
     void *tx;
-    (void)pageH;
     if (page == NULL || LayoutFindChild(page, "voice_modenable") == NULL) {
         return;
+    }
+    if (pageH < 80) {
+        pageH = 280;
     }
     innerW = pageW - pad * 2;
     trackW = innerW / 2;
@@ -611,9 +613,9 @@ static void FitVoicePage(void *page, int pageW, int pageH)
 
     y = pad;
     LayoutNamed(page, "voice_modenable", pad, y, innerW, rowH);
-    y += rowH + 8;
+    y += rowH + 4;
     LayoutNamed(page, "MicBoost", pad, y, innerW, rowH);
-    y += rowH + 12;
+    y += rowH + 6;
 
     tx = LayoutFindChild(page, "#GameUI_MicrophoneVolume");
     if (tx == NULL) {
@@ -621,18 +623,47 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     }
     FitVoiceSliderRow(page, "Transmit label", tx, pad, y, labelW, rightX, trackW,
                       labelH, sliderH);
-    y += sliderH + 8;
+    y += sliderH + 4;
     FitVoiceSliderRow(page, "Label1", LayoutFindChild(page, "VoiceReceive"),
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
-    y += sliderH + 8;
+    y += sliderH + 4;
     FitVoiceSliderRow(page, "NoiseGateLabel", LayoutFindChild(page, "NoiseGate"),
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
-    y += sliderH + 10;
+    y += sliderH + 8;
 
-    LayoutMicMeter(page, rightX, y, trackW, 56);
-    y += 60;
-    RoundFrame_NoteVoiceTrackW(trackW);
-    LayoutNamed(page, "TestMicrophone", rightX, y, trackW, rowH);
+    {
+        int testY = pageH - pad - rowH;
+        int vuH;
+        int vuW;
+        int vuX;
+        if (testY < y + 72) {
+            testY = y + 72;
+        }
+        vuH = testY - 6 - y;
+        if (vuH > 96) {
+            vuH = 96;
+        }
+        if (vuH < 64) {
+            vuH = 64;
+        }
+        vuW = vuH * 2;
+        if (vuW < 180) {
+            vuW = 180;
+        }
+        if (vuW > 200) {
+            vuW = 200;
+        }
+        if (vuW > innerW) {
+            vuW = innerW;
+        }
+        if (vuH * 2 > vuW) {
+            vuH = vuW / 2;
+        }
+        vuX = pad + (innerW - vuW) / 2;
+        LayoutMicMeter(page, vuX, y, vuW, vuH);
+        RoundFrame_NoteVoiceTrackW(trackW);
+        LayoutNamed(page, "TestMicrophone", rightX, testY, trackW, rowH);
+    }
 
     LayoutNamed(page, "MilesVoiceLabel", -4000, -4000, 1, 1);
 }

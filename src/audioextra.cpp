@@ -67,17 +67,20 @@ static int g_lastDoppler = -1;
 static int g_dopplerDirty = 0;
 static void *g_dopplerSlider = NULL;
 
-/* Mixer-backed Voice controls (transmit volume + MicBoost) are not cvars.
- * GameUI rereads Windows mixer on each Options open and gets 1.0 / on.
- * Keep last user values in a sidecar file and push them onto the widgets. */
+/* Transmit / MicBoost used to be Windows IVoiceTweak (sidecar voice_tweak.cfg).
+ * MetaVoice owns them as mv_gain / mv_boost and applies them on PCM. */
 static const char kVoiceTweakFile[] = "voice_tweak.cfg";
-static int g_voiceFileOk = 0;
-static float g_micVol = 1.0f;
-static int g_micBoost = 1;
+static int g_voiceMigrated = 0;
 static int g_micVolDirty = 0;
+static int g_micBoostSeeded = 0;
+static int g_lastMicBoostUi = 0;
 static void *g_voicePage = NULL;
 static void *g_micSlider = NULL;
 static void *g_micBoostBtn = NULL;
+
+static int CvarExists(const char *name);
+static float CvarGet(const char *name);
+static void CvarSet(const char *name, float value);
 
 static void VoiceTweakPath(char *out, int outSize)
 {
@@ -90,48 +93,51 @@ static void VoiceTweakPath(char *out, int outSize)
     out[outSize - 1] = '\0';
 }
 
-static void LoadVoiceTweakFile(void)
+static void MigrateVoiceTweakFileOnce(void)
 {
     FILE *f;
     char line[128];
     char path[MAX_PATH];
+    float vol = 1.0f;
+    int boost = 0;
+    int haveVol = 0;
+    int haveBoost = 0;
+
+    if (g_voiceMigrated || !CvarExists("mv_gain")) {
+        return;
+    }
+    g_voiceMigrated = 1;
     VoiceTweakPath(path, sizeof(path));
     f = fopen(path, "r");
     if (f == NULL) {
         return;
     }
     while (fgets(line, sizeof(line), f) != NULL) {
-        float vol;
-        int boost;
-        if (sscanf(line, "micvol %f", &vol) == 1) {
-            if (vol < 0.0f) {
-                vol = 0.0f;
+        float v;
+        int b;
+        if (sscanf(line, "micvol %f", &v) == 1) {
+            if (v < 0.0f) {
+                v = 0.0f;
             }
-            if (vol > 1.0f) {
-                vol = 1.0f;
+            if (v > 1.0f) {
+                v = 1.0f;
             }
-            g_micVol = vol;
-            g_voiceFileOk = 1;
-        } else if (sscanf(line, "boost %d", &boost) == 1) {
-            g_micBoost = boost ? 1 : 0;
-            g_voiceFileOk = 1;
+            vol = v;
+            haveVol = 1;
+        } else if (sscanf(line, "boost %d", &b) == 1) {
+            boost = b ? 1 : 0;
+            haveBoost = 1;
         }
     }
     fclose(f);
-}
-
-static void SaveVoiceTweakFile(void)
-{
-    char path[MAX_PATH];
-    FILE *f;
-    VoiceTweakPath(path, sizeof(path));
-    f = fopen(path, "w");
-    if (f == NULL) {
-        return;
+    /* config.cfg already has the MetaVoice defaults (1.0 / 0). Copy the
+     * old UI file only when those defaults are still in place. */
+    if (haveVol && CvarGet("mv_gain") > 0.999f) {
+        CvarSet("mv_gain", vol);
     }
-    fprintf(f, "micvol %.4f\nboost %d\n", g_micVol, g_micBoost);
-    fclose(f);
-    g_voiceFileOk = 1;
+    if (haveBoost && CvarGet("mv_boost") < 0.5f && boost) {
+        CvarSet("mv_boost", 1.0f);
+    }
 }
 
 static int IsMicVolumeSlider(const char *name)
@@ -363,9 +369,10 @@ void AudioExtra_OnSliderPaint(void *slider)
     }
     name = PanelName(slider);
     if (IsMicVolumeSlider(name)) {
-        if (!g_voiceFileOk) {
-            LoadVoiceTweakFile();
+        if (!CvarExists("mv_gain")) {
+            return;
         }
+        MigrateVoiceTweakFileOnce();
         dragging = 0;
         if (!IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)) {
             dragging = *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0;
@@ -377,29 +384,26 @@ void AudioExtra_OnSliderPaint(void *slider)
         if (cur > 100) {
             cur = 100;
         }
+        want = (int)(CvarGet("mv_gain") * 100.0f + 0.5f);
+        if (want < 0) {
+            want = 0;
+        }
+        if (want > 100) {
+            want = 100;
+        }
         if (g_micSlider != slider) {
             g_micSlider = slider;
-            if (g_voiceFileOk) {
-                want = (int)(g_micVol * 100.0f + 0.5f);
-                if (want < 0) {
-                    want = 0;
-                }
-                if (want > 100) {
-                    want = 100;
-                }
-                *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
-            }
+            *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
             g_micVolDirty = 0;
             return;
         }
         /* Track clicks jump the value without _dragging. Do not write the
-         * saved value back every frame — that eats those clicks. */
-        if (cur != (int)(g_micVol * 100.0f + 0.5f)) {
-            g_micVol = (float)cur / 100.0f;
+         * cvar back onto the knob every frame — that eats those clicks. */
+        if (cur != want) {
             g_micVolDirty = 1;
         }
         if (g_micVolDirty && !dragging) {
-            SaveVoiceTweakFile();
+            CvarSet("mv_gain", (float)cur / 100.0f);
             g_micVolDirty = 0;
         }
         return;
@@ -471,6 +475,9 @@ void AudioExtra_Init(HMODULE hGameUI)
     g_micSlider = NULL;
     g_micBoostBtn = NULL;
     g_micVolDirty = 0;
+    g_micBoostSeeded = 0;
+    g_lastMicBoostUi = 0;
+    g_voiceMigrated = 0;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
     g_SetPos = NULL;
@@ -506,24 +513,25 @@ void AudioExtra_SyncToggle(void *btn)
     }
     name = PanelName(btn);
     if (lstrcmpiA(name, "MicBoost") == 0) {
-        if (!g_voiceFileOk) {
-            LoadVoiceTweakFile();
-        }
-        ui = ReadSelected(btn);
-        if (g_micBoostBtn != btn) {
-            g_micBoostBtn = btn;
-            if (g_voiceFileOk) {
-                WriteSelected(btn, g_micBoost);
-            } else {
-                g_micBoost = ui ? 1 : 0;
-            }
+        if (!CvarExists("mv_boost")) {
             return;
         }
-        if (ui != g_micBoost) {
-            g_micBoost = ui ? 1 : 0;
-            SaveVoiceTweakFile();
-        } else if (g_voiceFileOk) {
-            WriteSelected(btn, g_micBoost);
+        MigrateVoiceTweakFileOnce();
+        ui = ReadSelected(btn);
+        engOn = CvarGet("mv_boost") > 0.5f;
+        if (!g_micBoostSeeded || g_micBoostBtn != btn) {
+            WriteSelected(btn, engOn);
+            g_lastMicBoostUi = engOn;
+            g_micBoostSeeded = 1;
+            g_micBoostBtn = btn;
+            return;
+        }
+        if (ui != g_lastMicBoostUi) {
+            CvarSet("mv_boost", ui ? 1.0f : 0.0f);
+            g_lastMicBoostUi = ui ? 1 : 0;
+        } else if (engOn != g_lastMicBoostUi) {
+            WriteSelected(btn, engOn);
+            g_lastMicBoostUi = engOn;
         }
         return;
     }
@@ -571,14 +579,13 @@ void AudioExtra_BindVoicePage(void *voicePage)
     if (voicePage == NULL) {
         return;
     }
-    if (!g_voiceFileOk) {
-        LoadVoiceTweakFile();
-    }
+    MigrateVoiceTweakFileOnce();
     if (g_voicePage != voicePage) {
         g_voicePage = voicePage;
         g_micSlider = NULL;
         g_micBoostBtn = NULL;
         g_micVolDirty = 0;
+        g_micBoostSeeded = 0;
     }
 }
 

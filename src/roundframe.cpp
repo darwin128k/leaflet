@@ -3010,7 +3010,7 @@ static void DrawVuNeedle(int w, int h, float level)
 {
     const float a0 = 2.6179938f;
     const float a1 = 0.5235988f;
-    const uint32_t peakRgb = 0xD42020u;
+    const uint32_t peakRgb = g_theme.accentRgb;
     /* Pivot and length match the analog VU TGA (2:1 face, hub below the scale). */
     float cx = (float)(w / 2 - 1) + 0.5f;
     float cy = (float)h * 0.821f;

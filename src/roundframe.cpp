@@ -1515,7 +1515,8 @@ static void PaintCvarToggleRow(void *thisPtr)
     int w = 0, h = 0;
     void *textImg;
 
-    if (IsAudioToggleName(PanelName(thisPtr))) {
+    if (IsAudioToggleName(PanelName(thisPtr))
+        || lstrcmpiA(PanelName(thisPtr), "MicBoost") == 0) {
         AudioExtra_SyncToggle(thisPtr);
     }
 

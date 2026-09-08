@@ -540,6 +540,7 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     }
     y = pad;
     LayoutNamed(page, "voice_modenable", pad, y, pageW - pad * 2, rowH);
+    AudioExtra_BindVoicePage(page);
     y += rowH + 14;
     LayoutNamed(page, "Transmit label", leftX, y, colW, 20);
     LayoutNamed(page, "Label1", rightX, y, colW, 20);

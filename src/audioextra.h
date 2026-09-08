@@ -9,6 +9,7 @@
 void AudioExtra_Init(HMODULE hGameUI);
 void AudioExtra_Tick(void);
 void AudioExtra_BindPage(void *audioPage);
+void AudioExtra_BindVoicePage(void *voicePage);
 void AudioExtra_SyncToggle(void *btn);
 void AudioExtra_OnSliderPaint(void *slider);
 void AudioExtra_EnsureDopplerSlider(void *audioPage);

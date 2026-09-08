@@ -556,12 +556,13 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     LayoutNamed(page, "VoiceReceive", rightX, y, colW, 48);
     y += 56;
     LayoutNamedAll(page, "MicMeter", leftX, y, colW, 32);
-    y += 40;
+    LayoutCaption(page, "NoiseGateLabel", rightX, y - 2, colW, 20);
+    LayoutNamed(page, "NoiseGate", rightX, y + 18, colW, 48);
+    y += 56;
     LayoutNamed(page, "TestMicrophone", leftX, y, 160, 24);
     y += 36;
     LayoutNamed(page, "MicBoost", pad, y, pageW - pad * 2, rowH);
-    y += rowH + 16;
-    LayoutNamed(page, "MilesVoiceLabel", pad, y, pageW - pad * 2, 48);
+    LayoutNamed(page, "MilesVoiceLabel", -4000, -4000, 1, 1);
 }
 
 static void FitVideoPage(void *page, int pageW, int pageH)

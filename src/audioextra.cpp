@@ -6,6 +6,7 @@
 #include <string.h>
 
 typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
+typedef void(__thiscall *SetSizeFn)(void *self, int wide, int tall);
 typedef void *(__thiscall *FindChildByNameFn)(void *self, const char *name, int recurse);
 typedef void(__thiscall *SetVisibleFn)(void *self, unsigned char visible);
 typedef char(__thiscall *IsSelectedFn)(void *self);
@@ -17,9 +18,13 @@ typedef void(__thiscall *PaintFn)(void *self);
 
 #define RVA_FINDCHILDBYNAME 0x00044100u
 #define RVA_SETPOS          0x000436f0u
+#define RVA_SETSIZE         0x00043750u
 #define RVA_ENGINE          0x000C3C9Cu /* cl_enginefunc_t *engine; CCvarSlider::Paint mov ecx,[imm] */
 #define RVA_COMBO_ACTIVATE  0x00031310u /* CLabeledCommandComboBox::ActivateItem(int) */
 #define RVA_CCVARSLIDER_VT  0x00097a3cu
+#define RVA_CCVARSLIDER_CTOR 0x000301C0u
+#define RVA_GAMEUI_NEW      0x0007A483u
+#define CCVARSLIDER_SIZE    0x108
 #define VT_PAINT_INDEX      107
 #define OFF_SETVISIBLE_VT   0x74 /* Panel::SetVisible; CCvarSlider slot 0x70 is the deleting dtor */
 #define OFF_BUTTON_ISSELECTED_VT 0x2b8
@@ -35,6 +40,7 @@ typedef void(__thiscall *PaintFn)(void *self);
 #define OFF_SLIDER_DRAGGING 0x71
 #define DOPPLER_SCALE       100.0f
 #define DOPPLER_MAX         2.0f
+#define MV_GATE_SLIDER_MAX  0.15f
 
 typedef struct {
     const char *field;
@@ -56,6 +62,7 @@ static const AudioToggle kToggles[] = {
 static BYTE *g_gameUiBase = NULL;
 static FindChildByNameFn g_FindChild = NULL;
 static SetPosFn g_SetPos = NULL;
+static SetSizeFn g_SetSize = NULL;
 static ComboActivateFn g_ComboActivate = NULL;
 static PaintFn g_origCvarSliderPaint = NULL;
 static void *g_audioPage = NULL;
@@ -77,6 +84,8 @@ static int g_lastMicBoostUi = 0;
 static void *g_voicePage = NULL;
 static void *g_micSlider = NULL;
 static void *g_micBoostBtn = NULL;
+static void *g_gateSlider = NULL;
+static int g_gateDirty = 0;
 
 static int CvarExists(const char *name);
 static float CvarGet(const char *name);
@@ -321,6 +330,72 @@ static void HideNamed(void *page, const char *name)
     }
 }
 
+static void ShowNamed(void *page, const char *name)
+{
+    void *c;
+    void **vt;
+    SetVisibleFn vis;
+    c = FindChild(page, name);
+    if (c == NULL) {
+        return;
+    }
+    vt = *(void ***)c;
+    if (vt == NULL) {
+        return;
+    }
+    vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
+    if (vis == NULL) {
+        return;
+    }
+    __try {
+        vis(c, 1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static void *CreateNoiseGateSlider(void *parent)
+{
+    typedef void *(__cdecl *GameUiNewFn)(unsigned int);
+    typedef void (__thiscall *CCvarSliderCtorFn)(void *self, void *par, const char *name,
+                                                 const char *label, float minv, float maxv,
+                                                 const char *cvar, int extra);
+    GameUiNewFn opnew;
+    CCvarSliderCtorFn ctor;
+    void *sl;
+    void **vt;
+    SetVisibleFn vis;
+
+    if (parent == NULL || g_gameUiBase == NULL) {
+        return NULL;
+    }
+    opnew = (GameUiNewFn)(g_gameUiBase + RVA_GAMEUI_NEW);
+    ctor = (CCvarSliderCtorFn)(g_gameUiBase + RVA_CCVARSLIDER_CTOR);
+    sl = NULL;
+    __try {
+        sl = opnew(CCVARSLIDER_SIZE);
+        if (sl == NULL) {
+            return NULL;
+        }
+        ctor(sl, parent, "NoiseGate", "Noise gate", 0.0f, MV_GATE_SLIDER_MAX, "mv_gate", 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return NULL;
+    }
+    if (g_SetSize != NULL) {
+        g_SetSize(sl, 160, 48);
+    }
+    vt = *(void ***)sl;
+    if (vt != NULL) {
+        vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
+        if (vis != NULL) {
+            __try {
+                vis(sl, 1);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+    }
+    return sl;
+}
+
 static void SyncHiddenQualityCombo(int highOn)
 {
     void *combo;
@@ -347,7 +422,8 @@ static void __fastcall CvarSliderPaint_Hook(void *self)
     /* Stock CCvarSlider::Paint reads the cvar every frame and writes the
      * knob. For the HEV slider we retargeted to al_doppler that fight the
      * mouse (0–1 suit scale vs 0–2), so skip it and only draw our track. */
-    if (lstrcmpiA(name, "Suit Slider") == 0 || lstrcmpiA(name, "al_doppler") == 0) {
+    if (lstrcmpiA(name, "Suit Slider") == 0 || lstrcmpiA(name, "al_doppler") == 0
+        || lstrcmpiA(name, "NoiseGate") == 0) {
         RoundFrame_PaintOptionsSlider(self);
         return;
     }
@@ -405,6 +481,47 @@ void AudioExtra_OnSliderPaint(void *slider)
         if (g_micVolDirty && !dragging) {
             CvarSet("mv_gain", (float)cur / 100.0f);
             g_micVolDirty = 0;
+        }
+        return;
+    }
+    if (lstrcmpiA(name, "NoiseGate") == 0) {
+        if (!CvarExists("mv_gate")) {
+            return;
+        }
+        minv = 0;
+        maxv = 100;
+        *(int *)((char *)slider + OFF_SLIDER_MIN) = minv;
+        *(int *)((char *)slider + OFF_SLIDER_MAX) = maxv;
+        want = (int)(CvarGet("mv_gate") / MV_GATE_SLIDER_MAX * 100.0f + 0.5f);
+        if (want < 0) {
+            want = 0;
+        }
+        if (want > 100) {
+            want = 100;
+        }
+        if (g_gateSlider != slider) {
+            g_gateSlider = slider;
+            *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+            g_gateDirty = 0;
+            return;
+        }
+        dragging = 0;
+        if (!IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)) {
+            dragging = *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0;
+        }
+        cur = *(int *)((char *)slider + OFF_SLIDER_VALUE);
+        if (cur < 0) {
+            cur = 0;
+        }
+        if (cur > 100) {
+            cur = 100;
+        }
+        if (cur != want) {
+            g_gateDirty = 1;
+        }
+        if (g_gateDirty && !dragging) {
+            CvarSet("mv_gate", (float)cur / 100.0f * MV_GATE_SLIDER_MAX);
+            g_gateDirty = 0;
         }
         return;
     }
@@ -478,15 +595,19 @@ void AudioExtra_Init(HMODULE hGameUI)
     g_micBoostSeeded = 0;
     g_lastMicBoostUi = 0;
     g_voiceMigrated = 0;
+    g_gateSlider = NULL;
+    g_gateDirty = 0;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
     g_SetPos = NULL;
+    g_SetSize = NULL;
     g_ComboActivate = NULL;
     if (hGameUI == NULL) {
         return;
     }
     g_FindChild = (FindChildByNameFn)(g_gameUiBase + RVA_FINDCHILDBYNAME);
     g_SetPos = (SetPosFn)(g_gameUiBase + RVA_SETPOS);
+    g_SetSize = (SetSizeFn)(g_gameUiBase + RVA_SETSIZE);
     g_ComboActivate = (ComboActivateFn)(g_gameUiBase + RVA_COMBO_ACTIVATE);
     {
         void **vt;
@@ -580,12 +701,18 @@ void AudioExtra_BindVoicePage(void *voicePage)
         return;
     }
     MigrateVoiceTweakFileOnce();
+    if (FindChild(voicePage, "NoiseGate") == NULL) {
+        CreateNoiseGateSlider(voicePage);
+    }
+    ShowNamed(voicePage, "NoiseGate");
+    ShowNamed(voicePage, "NoiseGateLabel");
     if (g_voicePage != voicePage) {
         g_voicePage = voicePage;
         g_micSlider = NULL;
         g_micBoostBtn = NULL;
         g_micVolDirty = 0;
         g_micBoostSeeded = 0;
+        g_gateSlider = NULL;
     }
 }
 

@@ -194,6 +194,11 @@ static void EnsureSurfaceHooks(void);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb);
+static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, int trackH,
+                              int splitX, uint32_t accentRgb, uint32_t trackRgb, uint32_t windowRgb);
+static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bgRgb);
+static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rgb, uint32_t bgRgb,
+                                int roundTop, int roundBottom);
 static void DrawPillAt(int x0, int y0, int w, int h, uint32_t rgb);
 static int PillInset(int y, int h);
 static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba);
@@ -224,12 +229,12 @@ static int ThemeStrokeThickness(void)
     return t;
 }
 
-static unsigned int MixRgbToWindow(uint32_t rgb, float a)
+static unsigned int MixRgbPair(uint32_t rgb, uint32_t bgRgb, float a)
 {
     int sr, sg, sb, br, bg, bb;
     int or_, og, ob;
     if (a <= 0.0f) {
-        return ThemeRgbPacked(g_theme.windowRgb);
+        return ThemeRgbPacked(bgRgb);
     }
     if (a >= 1.0f) {
         return ThemeRgbPacked(rgb);
@@ -237,13 +242,18 @@ static unsigned int MixRgbToWindow(uint32_t rgb, float a)
     sr = (int)((rgb >> 16) & 0xFFu);
     sg = (int)((rgb >> 8) & 0xFFu);
     sb = (int)(rgb & 0xFFu);
-    br = (int)((g_theme.windowRgb >> 16) & 0xFFu);
-    bg = (int)((g_theme.windowRgb >> 8) & 0xFFu);
-    bb = (int)(g_theme.windowRgb & 0xFFu);
+    br = (int)((bgRgb >> 16) & 0xFFu);
+    bg = (int)((bgRgb >> 8) & 0xFFu);
+    bb = (int)(bgRgb & 0xFFu);
     or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
     og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
     ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
     return ThemeRgbPacked(((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob);
+}
+
+static unsigned int MixRgbToWindow(uint32_t rgb, float a)
+{
+    return MixRgbPair(rgb, g_theme.windowRgb, a);
 }
 
 /* Subpixel inset of a circular corner; same circle as the integer fill. */
@@ -272,7 +282,7 @@ static float CornerInsetF(int y, int h, int r)
     return rf - sqrtf(inside);
 }
 
-static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
+static void FillSpanSoftEnds(int y, float x0, float x1, uint32_t rgb, uint32_t bgL, uint32_t bgR)
 {
     int s;
     int e;
@@ -287,7 +297,7 @@ static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
         s = (int)x0 - 1;
     }
     if (s == e) {
-        SurfaceFill(s, y, s + 1, y + 1, MixRgbToWindow(rgb, x1 - x0));
+        SurfaceFill(s, y, s + 1, y + 1, MixRgbPair(rgb, bgL, x1 - x0));
         return;
     }
     a0 = (float)(s + 1) - x0;
@@ -297,7 +307,7 @@ static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
     if (a0 > 1.0f) {
         a0 = 1.0f;
     }
-    SurfaceFill(s, y, s + 1, y + 1, MixRgbToWindow(rgb, a0));
+    SurfaceFill(s, y, s + 1, y + 1, MixRgbPair(rgb, bgL, a0));
     if (e > s + 1) {
         SurfaceFill(s + 1, y, e, y + 1, ThemeRgbPacked(rgb));
     }
@@ -306,8 +316,13 @@ static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
         if (a1 > 1.0f) {
             a1 = 1.0f;
         }
-        SurfaceFill(e, y, e + 1, y + 1, MixRgbToWindow(rgb, a1));
+        SurfaceFill(e, y, e + 1, y + 1, MixRgbPair(rgb, bgR, a1));
     }
+}
+
+static void FillSpanSoft(int y, float x0, float x1, uint32_t rgb)
+{
+    FillSpanSoftEnds(y, x0, x1, rgb, g_theme.windowRgb, g_theme.windowRgb);
 }
 
 static int ISqrt(int n)
@@ -344,6 +359,18 @@ static int RadiusForSize(int w, int h)
     (void)w;
     (void)h;
     return 12;
+}
+
+static int CapsuleRadius(int w, int h)
+{
+    int r = h / 2;
+    if (w / 2 < r) {
+        r = w / 2;
+    }
+    if (r < 2) {
+        r = 2;
+    }
+    return r;
 }
 
 static int CornerInset(int y, int h, int r)
@@ -618,12 +645,17 @@ static void __fastcall CvarSliderApply_Hook(void *thisPtr)
         return;
     }
     SnapCvarSlider(thisPtr);
+    /* Stock Apply writes the cvar immediately (Cvar_SetValue) and clears
+     * the dirty flag. Skipping it left Apply armed and Paint read the old
+     * cvar for one frame, so the knob jumped and needed a second click. */
+    if (g_origCvarSliderApply != NULL) {
+        g_origCvarSliderApply(thisPtr);
+    }
+    if (IsBadReadPtr((char *)thisPtr + OFF_SLIDER_VALUE, 4)) {
+        return;
+    }
     ival = *(int *)((char *)thisPtr + OFF_SLIDER_VALUE);
-    *(int *)((char *)thisPtr + OFF_CCVAR_STARTI) = ival;
-    *(int *)((char *)thisPtr + OFF_CCVAR_LASTI) = ival;
     f = (float)ival / 100.0f;
-    *(float *)((char *)thisPtr + OFF_CCVAR_STARTF) = f;
-    *(float *)((char *)thisPtr + OFF_CCVAR_CURF) = f;
     cvar = CvarSliderCvarName(thisPtr);
     if (cvar[0] == '\0') {
         return;
@@ -935,7 +967,7 @@ static void PaintControlPlate(void *thisPtr)
 {
     int w = 0, h = 0;
     int r;
-    unsigned int fill;
+    uint32_t rgb;
     if (g_GetSize == NULL) {
         return;
     }
@@ -944,13 +976,9 @@ static void PaintControlPlate(void *thisPtr)
         return;
     }
     EnsureSurfaceHooks();
-    r = (h < 20) ? 4 : 8;
-    if (r * 2 > h) {
-        r = h / 2;
-    }
-    fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
-                                 : ThemeRgbPacked(g_theme.trackRgb);
-    DrawRoundedFillAt(0, 0, w, h, r, fill, 1, 1);
+    r = CapsuleRadius(w, h);
+    rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb : g_theme.trackRgb;
+    DrawAaRoundedFillAt(0, 0, w, h, r, rgb, g_theme.windowRgb, 1, 1);
 }
 
 static int IsMouseToggleName(const char *name)
@@ -1075,9 +1103,10 @@ static void DrawToggleSwitch(void *thisPtr)
         y = 0;
     }
     trackRgb = on ? g_theme.accentRgb : g_theme.trackRgb;
-    DrawPillAt(x, y, trackW, trackH, trackRgb);
-    DrawAaDisk(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
-               SLIDER_KNOB_RGB, trackRgb);
+    DrawAaPillAt(x, y, trackW, trackH, trackRgb, g_theme.windowRgb);
+    DrawAaDiskOnTrack(on ? (x + trackW - knob - 3) : (x + 3), y + (trackH - knob) / 2, knob,
+                      SLIDER_KNOB_RGB, y, trackH, on ? (x + trackW) : x,
+                      g_theme.accentRgb, g_theme.trackRgb, g_theme.windowRgb);
 }
 
 /* Same SurfaceFill path as the track — no ISurface text (that crashed).
@@ -1403,20 +1432,12 @@ static void DrawValueSlider(void *thisPtr)
         cx = w - padX;
     }
     DrawPillAt(padX, trackY, w - padX * 2, trackH, g_theme.trackRgb);
-    /* Straight right edge under the knob so the disk covers the join. */
     if (cx > padX) {
+        int tr = trackH / 2;
         for (row = 0; row < trackH; row++) {
-            int inset = PillInset(row, trackH);
-            int xL = padX + inset;
-            int xFillR = cx;
-            int xTrackR = w - padX - inset;
-            if (xFillR > xTrackR) {
-                xFillR = xTrackR;
-            }
-            if (xFillR > xL) {
-                SurfaceFill(xL, trackY + row, xFillR, trackY + row + 1,
-                            ThemeRgbPacked(g_theme.accentRgb));
-            }
+            float inset = CornerInsetF(row, trackH, tr);
+            FillSpanSoftEnds(trackY + row, (float)padX + inset, (float)cx,
+                             g_theme.accentRgb, g_theme.windowRgb, g_theme.accentRgb);
         }
     }
     if (dragging) {
@@ -1440,7 +1461,21 @@ static void DrawValueSlider(void *thisPtr)
                 knobY = 0;
             }
         }
-        DrawPillAt(knobX, knobY, capW, capH, g_theme.accentRgb);
+        {
+            int cr = capH / 2;
+            for (row = 0; row < capH; row++) {
+                float inset = CornerInsetF(row, capH, cr);
+                int py = knobY + row;
+                uint32_t bgL = g_theme.windowRgb;
+                uint32_t bgR = g_theme.windowRgb;
+                if (py >= trackY && py < trackY + trackH) {
+                    bgL = g_theme.accentRgb;
+                    bgR = g_theme.trackRgb;
+                }
+                FillSpanSoftEnds(py, (float)knobX + inset, (float)(knobX + capW) - inset,
+                                 g_theme.accentRgb, bgL, bgR);
+            }
+        }
         if (buf[0] != '\0') {
             int tx = knobX + (capW - tw) / 2;
             int ty = knobY + (capH - 10) / 2;
@@ -1455,7 +1490,8 @@ static void DrawValueSlider(void *thisPtr)
         if (knobY < 0) {
             knobY = 0;
         }
-        DrawAaDisk(knobX, knobY, knob, SLIDER_KNOB_RGB, g_theme.windowRgb);
+        DrawAaDiskOnTrack(knobX, knobY, knob, SLIDER_KNOB_RGB, trackY, trackH, cx,
+                          g_theme.accentRgb, g_theme.trackRgb, g_theme.windowRgb);
         DrawAaDisk(knobX + (knob - SLIDER_KNOB_DOT) / 2,
                    knobY + (knob - SLIDER_KNOB_DOT) / 2,
                    SLIDER_KNOB_DOT, g_theme.accentRgb, SLIDER_KNOB_RGB);
@@ -1479,7 +1515,8 @@ static void PaintCvarToggleRow(void *thisPtr)
     int w = 0, h = 0;
     void *textImg;
 
-    if (IsAudioToggleName(PanelName(thisPtr))) {
+    if (IsAudioToggleName(PanelName(thisPtr))
+        || lstrcmpiA(PanelName(thisPtr), "MicBoost") == 0) {
         AudioExtra_SyncToggle(thisPtr);
     }
 
@@ -1980,14 +2017,14 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
             r = 3;
         }
         {
-            unsigned int fill = g_roundHot ? ThemeRgbPacked(g_theme.accentRgb)
-                                           : ThemeRgbPacked(g_theme.trackRgb);
             g_edgeCaptured = 1;
             g_edgeX = x0;
             g_edgeY = y0;
             g_edgeRoundTop = 1;
             g_edgeRoundBottom = 1;
-            DrawRoundedFillAt(x0, y0, rw, rh, r, fill, 1, 1);
+            DrawAaRoundedFillAt(x0, y0, rw, rh, r,
+                                g_roundHot ? g_theme.accentRgb : g_theme.trackRgb,
+                                g_theme.windowRgb, 1, 1);
         }
         return;
     }
@@ -2099,7 +2136,7 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
             g_roundH = h;
             g_roundIsButton = isBtn;
             g_roundHot = isBtn && ControlIsHot(thisPtr);
-            g_roundR = isBtn ? 8 : RadiusForSize(w, h);
+            g_roundR = isBtn ? CapsuleRadius(w, h) : RadiusForSize(w, h);
             g_roundActive = 1;
             g_edgeCaptured = 0;
             if (!isBtn) {
@@ -2123,9 +2160,9 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
             if (isBtn) {
                 int px = g_edgeCaptured ? g_edgeX : 0;
                 int py = g_edgeCaptured ? g_edgeY : 0;
-                unsigned int fill = ControlIsHot(thisPtr) ? ThemeRgbPacked(g_theme.accentRgb)
-                                                          : ThemeRgbPacked(g_theme.trackRgb);
-                DrawRoundedFillAt(px, py, w, h, 8, fill, 1, 1);
+                uint32_t rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb
+                                                     : g_theme.trackRgb;
+                DrawAaRoundedFillAt(px, py, w, h, CapsuleRadius(w, h), rgb, g_theme.windowRgb, 1, 1);
             } else {
                 /* Do not refill after orig: that covered the Frame title. */
                 DrawRoundedStrokeAt(0, 0, w, h, g_roundR,
@@ -2284,6 +2321,201 @@ static void PaintMacCloseDot(void *thisPtr)
     DrawAaDisk(ox, oy, d, rgb, g_theme.windowRgb);
 }
 
+static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, int trackH,
+                              int splitX, uint32_t accentRgb, uint32_t trackRgb, uint32_t windowRgb)
+{
+    float cx;
+    float cy;
+    float rad;
+    int px;
+    int py;
+    int sr;
+    int sg;
+    int sb;
+
+    if (d < 4) {
+        return;
+    }
+    cx = (float)x0 + (float)d * 0.5f;
+    cy = (float)y0 + (float)d * 0.5f;
+    rad = (float)d * 0.5f - 0.35f;
+    sr = (int)((rgb >> 16) & 0xFFu);
+    sg = (int)((rgb >> 8) & 0xFFu);
+    sb = (int)(rgb & 0xFFu);
+    for (py = y0; py < y0 + d; py++) {
+        for (px = x0; px < x0 + d; px++) {
+            float dx = ((float)px + 0.5f) - cx;
+            float dy = ((float)py + 0.5f) - cy;
+            float dist = (float)sqrt(dx * dx + dy * dy);
+            float a = (rad + 1.15f) - dist;
+            uint32_t bgRgb;
+            int br, bg, bb, or_, og, ob;
+            if (a <= 0.0f) {
+                continue;
+            }
+            if (a > 1.0f) {
+                a = 1.0f;
+            }
+            if (py >= trackY && py < trackY + trackH) {
+                bgRgb = (px < splitX) ? accentRgb : trackRgb;
+            } else {
+                bgRgb = windowRgb;
+            }
+            br = (int)((bgRgb >> 16) & 0xFFu);
+            bg = (int)((bgRgb >> 8) & 0xFFu);
+            bb = (int)(bgRgb & 0xFFu);
+            or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
+            og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
+            ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
+            SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(
+                ((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob));
+        }
+    }
+}
+
+static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bgRgb)
+{
+    float r;
+    float rad;
+    float cxL;
+    float cxR;
+    float cy;
+    int px;
+    int py;
+
+    if (w < 4 || h < 4) {
+        SurfaceFill(x0, y0, x0 + w, y0 + h, ThemeRgbPacked(rgb));
+        return;
+    }
+    if ((h & 1) != 0) {
+        h -= 1;
+    }
+    r = (float)h * 0.5f;
+    rad = r - 0.35f;
+    cxL = (float)x0 + r;
+    cxR = (float)x0 + (float)w - r;
+    cy = (float)y0 + r;
+    for (py = y0; py < y0 + h; py++) {
+        for (px = x0; px < x0 + w; px++) {
+            float qx = (float)px + 0.5f;
+            float qy = (float)py + 0.5f;
+            float dx;
+            float dy;
+            float dist;
+            float a;
+            if (qx < cxL) {
+                dx = qx - cxL;
+                dy = qy - cy;
+                dist = (float)sqrt(dx * dx + dy * dy);
+            } else if (qx > cxR) {
+                dx = qx - cxR;
+                dy = qy - cy;
+                dist = (float)sqrt(dx * dx + dy * dy);
+            } else {
+                dist = (float)fabs(qy - cy);
+            }
+            a = (rad + 1.15f) - dist;
+            if (a <= 0.0f) {
+                continue;
+            }
+            if (a > 1.0f) {
+                a = 1.0f;
+            }
+            SurfaceFill(px, py, px + 1, py + 1, MixRgbPair(rgb, bgRgb, a));
+        }
+    }
+}
+
+static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rgb, uint32_t bgRgb,
+                                int roundTop, int roundBottom)
+{
+    int topR;
+    int botR;
+    int px;
+    int py;
+
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    topR = roundTop ? r : 0;
+    botR = roundBottom ? r : 0;
+    if (topR * 2 > w) {
+        topR = w / 2;
+    }
+    if (botR * 2 > w) {
+        botR = w / 2;
+    }
+    if (topR + botR > h) {
+        int cap = h / 2;
+        if (topR > cap) {
+            topR = cap;
+        }
+        if (botR > cap) {
+            botR = cap;
+        }
+    }
+    if (topR < 2 && botR < 2) {
+        SurfaceFill(x0, y0, x0 + w, y0 + h, ThemeRgbPacked(rgb));
+        return;
+    }
+    for (py = y0; py < y0 + h; py++) {
+        for (px = x0; px < x0 + w; px++) {
+            float qx = (float)px + 0.5f;
+            float qy = (float)py + 0.5f;
+            float xL = (float)x0;
+            float yT = (float)y0;
+            float xR = (float)(x0 + w);
+            float yB = (float)(y0 + h);
+            float cr = 0.0f;
+            float cx = 0.0f;
+            float cy = 0.0f;
+            int corner = 0;
+            float a;
+            if (topR > 0 && qy < yT + (float)topR) {
+                if (qx < xL + (float)topR) {
+                    corner = 1;
+                    cr = (float)topR;
+                    cx = xL + cr;
+                    cy = yT + cr;
+                } else if (qx >= xR - (float)topR) {
+                    corner = 1;
+                    cr = (float)topR;
+                    cx = xR - cr;
+                    cy = yT + cr;
+                }
+            } else if (botR > 0 && qy >= yB - (float)botR) {
+                if (qx < xL + (float)botR) {
+                    corner = 1;
+                    cr = (float)botR;
+                    cx = xL + cr;
+                    cy = yB - cr;
+                } else if (qx >= xR - (float)botR) {
+                    corner = 1;
+                    cr = (float)botR;
+                    cx = xR - cr;
+                    cy = yB - cr;
+                }
+            }
+            if (corner) {
+                float dx = qx - cx;
+                float dy = qy - cy;
+                float dist = (float)sqrt(dx * dx + dy * dy);
+                float rad = cr - 0.35f;
+                a = (rad + 1.15f) - dist;
+                if (a <= 0.0f) {
+                    continue;
+                }
+                if (a > 1.0f) {
+                    a = 1.0f;
+                }
+            } else {
+                a = 1.0f;
+            }
+            SurfaceFill(px, py, px + 1, py + 1, MixRgbPair(rgb, bgRgb, a));
+        }
+    }
+}
+
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb)
 {
     float cx;
@@ -2380,19 +2612,19 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
     } else if (tab) {
         CenterRoundedButtonText(thisPtr);
         if (tabHot) {
-        unsigned char *fg = (unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE_FG;
-        /* Selected colour at +0x109, idle/hover colour at +0x10D. */
-        fg[0] = 245;
-        fg[1] = 245;
-        fg[2] = 247;
-        fg[3] = 255;
-        fg[4] = 245;
-        fg[5] = 245;
-        fg[6] = 247;
-        fg[7] = 255;
-        ForceWhiteOnTransparent(thisPtr);
-        SetFgColorWhite(thisPtr);
-        PaintControlPlate(thisPtr);
+            unsigned char *fg = (unsigned char *)thisPtr + OFF_PAGETAB_ACTIVE_FG;
+            /* Selected colour at +0x109, idle/hover colour at +0x10D. */
+            fg[0] = 245;
+            fg[1] = 245;
+            fg[2] = 247;
+            fg[3] = 255;
+            fg[4] = 245;
+            fg[5] = 245;
+            fg[6] = 247;
+            fg[7] = 255;
+            ForceWhiteOnTransparent(thisPtr);
+            SetFgColorWhite(thisPtr);
+            PaintControlPlate(thisPtr);
         }
     }
     if (g_origButtonPaint != NULL) {

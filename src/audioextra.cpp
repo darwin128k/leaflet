@@ -1,6 +1,8 @@
 #include "audioextra.h"
 #include "roundframe.h"
 #include "log.h"
+#include "bgswitch.h"
+#include <stdio.h>
 #include <string.h>
 
 typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
@@ -59,9 +61,87 @@ static PaintFn g_origCvarSliderPaint = NULL;
 static void *g_audioPage = NULL;
 static unsigned char g_seeded[TOGGLE_COUNT];
 static unsigned char g_lastUi[TOGGLE_COUNT];
+static void *g_toggleBtn[TOGGLE_COUNT];
 static int g_dopplerSeeded = 0;
 static int g_lastDoppler = -1;
 static int g_dopplerDirty = 0;
+static void *g_dopplerSlider = NULL;
+
+/* Mixer-backed Voice controls (transmit volume + MicBoost) are not cvars.
+ * GameUI rereads Windows mixer on each Options open and gets 1.0 / on.
+ * Keep last user values in a sidecar file and push them onto the widgets. */
+static const char kVoiceTweakFile[] = "voice_tweak.cfg";
+static int g_voiceFileOk = 0;
+static float g_micVol = 1.0f;
+static int g_micBoost = 1;
+static int g_micVolDirty = 0;
+static void *g_voicePage = NULL;
+static void *g_micSlider = NULL;
+static void *g_micBoostBtn = NULL;
+
+static void VoiceTweakPath(char *out, int outSize)
+{
+    const char *root = BgSwitch_GetGameRoot();
+    if (root != NULL && root[0] != '\0') {
+        _snprintf(out, outSize, "%s\\voice_tweak.cfg", root);
+    } else {
+        lstrcpynA(out, kVoiceTweakFile, outSize);
+    }
+    out[outSize - 1] = '\0';
+}
+
+static void LoadVoiceTweakFile(void)
+{
+    FILE *f;
+    char line[128];
+    char path[MAX_PATH];
+    VoiceTweakPath(path, sizeof(path));
+    f = fopen(path, "r");
+    if (f == NULL) {
+        return;
+    }
+    while (fgets(line, sizeof(line), f) != NULL) {
+        float vol;
+        int boost;
+        if (sscanf(line, "micvol %f", &vol) == 1) {
+            if (vol < 0.0f) {
+                vol = 0.0f;
+            }
+            if (vol > 1.0f) {
+                vol = 1.0f;
+            }
+            g_micVol = vol;
+            g_voiceFileOk = 1;
+        } else if (sscanf(line, "boost %d", &boost) == 1) {
+            g_micBoost = boost ? 1 : 0;
+            g_voiceFileOk = 1;
+        }
+    }
+    fclose(f);
+}
+
+static void SaveVoiceTweakFile(void)
+{
+    char path[MAX_PATH];
+    FILE *f;
+    VoiceTweakPath(path, sizeof(path));
+    f = fopen(path, "w");
+    if (f == NULL) {
+        return;
+    }
+    fprintf(f, "micvol %.4f\nboost %d\n", g_micVol, g_micBoost);
+    fclose(f);
+    g_voiceFileOk = 1;
+}
+
+static int IsMicVolumeSlider(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    return lstrcmpiA(name, "#GameUI_MicrophoneVolume") == 0
+        || lstrcmpiA(name, "Microphone Volume") == 0;
+}
 
 static void **EngineTable(void)
 {
@@ -282,6 +362,48 @@ void AudioExtra_OnSliderPaint(void *slider)
         return;
     }
     name = PanelName(slider);
+    if (IsMicVolumeSlider(name)) {
+        if (!g_voiceFileOk) {
+            LoadVoiceTweakFile();
+        }
+        dragging = 0;
+        if (!IsBadReadPtr((char *)slider + OFF_SLIDER_DRAGGING, 1)) {
+            dragging = *((unsigned char *)slider + OFF_SLIDER_DRAGGING) != 0;
+        }
+        cur = *(int *)((char *)slider + OFF_SLIDER_VALUE);
+        if (cur < 0) {
+            cur = 0;
+        }
+        if (cur > 100) {
+            cur = 100;
+        }
+        if (g_micSlider != slider) {
+            g_micSlider = slider;
+            if (g_voiceFileOk) {
+                want = (int)(g_micVol * 100.0f + 0.5f);
+                if (want < 0) {
+                    want = 0;
+                }
+                if (want > 100) {
+                    want = 100;
+                }
+                *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
+            }
+            g_micVolDirty = 0;
+            return;
+        }
+        /* Track clicks jump the value without _dragging. Do not write the
+         * saved value back every frame — that eats those clicks. */
+        if (cur != (int)(g_micVol * 100.0f + 0.5f)) {
+            g_micVol = (float)cur / 100.0f;
+            g_micVolDirty = 1;
+        }
+        if (g_micVolDirty && !dragging) {
+            SaveVoiceTweakFile();
+            g_micVolDirty = 0;
+        }
+        return;
+    }
     if (lstrcmpiA(name, "al_doppler") != 0 && lstrcmpiA(name, "Suit Slider") != 0) {
         return;
     }
@@ -299,10 +421,12 @@ void AudioExtra_OnSliderPaint(void *slider)
     if (want > maxv) {
         want = maxv;
     }
-    if (!g_dopplerSeeded) {
+    if (g_dopplerSlider != slider) {
         *(int *)((char *)slider + OFF_SLIDER_VALUE) = want;
         g_lastDoppler = want;
+        g_dopplerDirty = 0;
         g_dopplerSeeded = 1;
+        g_dopplerSlider = slider;
         return;
     }
     dragging = 0;
@@ -337,10 +461,16 @@ void AudioExtra_Init(HMODULE hGameUI)
 {
     memset(g_seeded, 0, sizeof(g_seeded));
     memset(g_lastUi, 0, sizeof(g_lastUi));
+    memset(g_toggleBtn, 0, sizeof(g_toggleBtn));
     g_dopplerSeeded = 0;
     g_lastDoppler = -1;
     g_dopplerDirty = 0;
+    g_dopplerSlider = NULL;
     g_audioPage = NULL;
+    g_voicePage = NULL;
+    g_micSlider = NULL;
+    g_micBoostBtn = NULL;
+    g_micVolDirty = 0;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
     g_SetPos = NULL;
@@ -375,6 +505,28 @@ void AudioExtra_SyncToggle(void *btn)
         return;
     }
     name = PanelName(btn);
+    if (lstrcmpiA(name, "MicBoost") == 0) {
+        if (!g_voiceFileOk) {
+            LoadVoiceTweakFile();
+        }
+        ui = ReadSelected(btn);
+        if (g_micBoostBtn != btn) {
+            g_micBoostBtn = btn;
+            if (g_voiceFileOk) {
+                WriteSelected(btn, g_micBoost);
+            } else {
+                g_micBoost = ui ? 1 : 0;
+            }
+            return;
+        }
+        if (ui != g_micBoost) {
+            g_micBoost = ui ? 1 : 0;
+            SaveVoiceTweakFile();
+        } else if (g_voiceFileOk) {
+            WriteSelected(btn, g_micBoost);
+        }
+        return;
+    }
     for (i = 0; i < TOGGLE_COUNT; i++) {
         if (lstrcmpiA(name, kToggles[i].field) != 0) {
             continue;
@@ -383,10 +535,14 @@ void AudioExtra_SyncToggle(void *btn)
             return;
         }
         engOn = CvarGet(kToggles[i].cvar) > 0.01f;
-        if (!g_seeded[i]) {
+        /* A new Options dialog allocates new check buttons (all off). If we
+         * still think the last dialog's "on" was the UI, paint would write
+         * hisound 0 the moment you reopen. Seed from the engine instead. */
+        if (!g_seeded[i] || g_toggleBtn[i] != btn) {
             WriteSelected(btn, engOn);
             g_lastUi[i] = (unsigned char)engOn;
             g_seeded[i] = 1;
+            g_toggleBtn[i] = btn;
             if (i == 0) {
                 SyncHiddenQualityCombo(engOn);
             }
@@ -407,6 +563,22 @@ void AudioExtra_SyncToggle(void *btn)
             }
         }
         return;
+    }
+}
+
+void AudioExtra_BindVoicePage(void *voicePage)
+{
+    if (voicePage == NULL) {
+        return;
+    }
+    if (!g_voiceFileOk) {
+        LoadVoiceTweakFile();
+    }
+    if (g_voicePage != voicePage) {
+        g_voicePage = voicePage;
+        g_micSlider = NULL;
+        g_micBoostBtn = NULL;
+        g_micVolDirty = 0;
     }
 }
 

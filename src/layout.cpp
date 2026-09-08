@@ -464,7 +464,7 @@ static void LayoutMicMeter(void *page, int x, int y, int w, int h)
             continue;
         }
         if (!IsBadWritePtr((char *)child + OFF_IMAGEPANEL_SCALEIMAGE, 1)) {
-            *((unsigned char *)child + OFF_IMAGEPANEL_SCALEIMAGE) = 1;
+            *((unsigned char *)child + OFF_IMAGEPANEL_SCALEIMAGE) = 0;
         }
         g_SetPos(child, x, y);
         if (w > 0 && h > 0) {
@@ -633,34 +633,14 @@ static void FitVoicePage(void *page, int pageW, int pageH)
 
     {
         int testY = pageH - pad - rowH;
-        int vuH;
-        int vuW;
+        int vuW = 192;
+        int vuH = 96;
         int vuX;
         int vuY;
         int btnW;
         int btnX;
-        if (testY < y + 80) {
-            testY = y + 80;
-        }
-        vuH = testY - 12 - y;
-        if (vuH > 96) {
-            vuH = 96;
-        }
-        if (vuH < 64) {
-            vuH = 64;
-        }
-        vuW = vuH * 2;
-        if (vuW < 180) {
-            vuW = 180;
-        }
-        if (vuW > 200) {
-            vuW = 200;
-        }
-        if (vuW > innerW) {
-            vuW = innerW;
-        }
-        if (vuH * 2 > vuW) {
-            vuH = vuW / 2;
+        if (testY < y + vuH + 20) {
+            testY = y + vuH + 20;
         }
         /* Sit the meter just above the button, not flush under the sliders. */
         vuY = testY - 10 - vuH;

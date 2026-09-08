@@ -4,7 +4,6 @@
 #include "audioextra.h"
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
@@ -185,10 +184,6 @@ static int g_dragValueRestY = 0;
 static int g_vuLiveW = 0;
 static int g_vuLiveHold = 0;
 static int g_voiceTrackW = 0;
-static unsigned char *g_vuRgba = NULL;
-static int g_vuTw = 0;
-static int g_vuTh = 0;
-static int g_vuTgaTried = 0;
 
 /* Captured from the main-body fill inside DrawFilledRect_Hook so
  * RunRoundedBackground can trace a stroke around the exact same rounded
@@ -220,11 +215,6 @@ static unsigned int ThemeRgbPacked(uint32_t rgb)
     unsigned int g = (rgb >> 8) & 0xFFu;
     unsigned int b = rgb & 0xFFu;
     return (0xFFu << 24) | (b << 16) | (g << 8) | r;
-}
-
-static unsigned int ThemeRgbaPacked(unsigned int r, unsigned int g, unsigned int b, unsigned int a)
-{
-    return (a << 24) | (b << 16) | (g << 8) | r;
 }
 
 static unsigned int ThemeStrokePacked(void)
@@ -2885,144 +2875,6 @@ static void DrawVuLine(int x0, int y0, int x1, int y1, uint32_t rgb)
     }
 }
 
-static int LoadVuFaceTga(void)
-{
-    const char *paths[] = {
-        "cstrike/resource/mic_meter_dead.tga",
-        "valve/resource/mic_meter_dead.tga",
-        NULL
-    };
-    int i;
-    FILE *fp;
-    unsigned char hdr[18];
-    unsigned short tw;
-    unsigned short th;
-    unsigned char bpp;
-    unsigned char desc;
-    size_t n;
-    unsigned char *src;
-    unsigned char *dst;
-    int x;
-    int y;
-    int srcY;
-    int topOrigin;
-
-    if (g_vuTgaTried) {
-        return g_vuRgba != NULL;
-    }
-    g_vuTgaTried = 1;
-    for (i = 0; paths[i] != NULL; i++) {
-        fp = fopen(paths[i], "rb");
-        if (fp != NULL) {
-            break;
-        }
-    }
-    if (fp == NULL) {
-        return 0;
-    }
-    if (fread(hdr, 1, 18, fp) != 18 || hdr[2] != 2) {
-        fclose(fp);
-        return 0;
-    }
-    tw = (unsigned short)(hdr[12] | (hdr[13] << 8));
-    th = (unsigned short)(hdr[14] | (hdr[15] << 8));
-    bpp = hdr[16];
-    desc = hdr[17];
-    if (tw < 8 || th < 8 || tw > 1024 || th > 1024 || bpp != 32) {
-        fclose(fp);
-        return 0;
-    }
-    if (hdr[0] != 0) {
-        if (fseek(fp, hdr[0], SEEK_CUR) != 0) {
-            fclose(fp);
-            return 0;
-        }
-    }
-    n = (size_t)tw * (size_t)th * 4u;
-    src = (unsigned char *)malloc(n);
-    dst = (unsigned char *)malloc(n);
-    if (src == NULL || dst == NULL) {
-        free(src);
-        free(dst);
-        fclose(fp);
-        return 0;
-    }
-    if (fread(src, 1, n, fp) != n) {
-        free(src);
-        free(dst);
-        fclose(fp);
-        return 0;
-    }
-    fclose(fp);
-    topOrigin = (desc & 0x20) != 0;
-    for (y = 0; y < (int)th; y++) {
-        srcY = topOrigin ? y : ((int)th - 1 - y);
-        for (x = 0; x < (int)tw; x++) {
-            const unsigned char *p = src + ((srcY * (int)tw + x) * 4);
-            unsigned char *o = dst + ((y * (int)tw + x) * 4);
-            o[0] = p[2];
-            o[1] = p[1];
-            o[2] = p[0];
-            o[3] = p[3];
-        }
-    }
-    free(src);
-    g_vuRgba = dst;
-    g_vuTw = (int)tw;
-    g_vuTh = (int)th;
-    return 1;
-}
-
-static void DrawVuFace(int w, int h)
-{
-    int y;
-    if (!LoadVuFaceTga() || w < 8 || h < 4) {
-        return;
-    }
-    for (y = 0; y < h; y++) {
-        int x = 0;
-        int srcY = y * g_vuTh / h;
-        if (srcY >= g_vuTh) {
-            srcY = g_vuTh - 1;
-        }
-        while (x < w) {
-            int srcX = x * g_vuTw / w;
-            const unsigned char *p;
-            unsigned int packed;
-            int run = x;
-            if (srcX >= g_vuTw) {
-                srcX = g_vuTw - 1;
-            }
-            p = g_vuRgba + ((srcY * g_vuTw + srcX) * 4);
-            if (p[3] < 24) {
-                x++;
-                continue;
-            }
-            packed = ThemeRgbaPacked(p[0], p[1], p[2], p[3]);
-            run = x + 1;
-            while (run < w) {
-                int sx2 = run * g_vuTw / w;
-                const unsigned char *q;
-                unsigned int packed2;
-                if (sx2 >= g_vuTw) {
-                    sx2 = g_vuTw - 1;
-                }
-                q = g_vuRgba + ((srcY * g_vuTw + sx2) * 4);
-                if (q[3] < 24) {
-                    break;
-                }
-                packed2 = ThemeRgbaPacked(q[0], q[1], q[2], q[3]);
-                if (packed2 != packed) {
-                    break;
-                }
-                run++;
-            }
-            SurfaceFill(x, y, run, y + 1, packed);
-            x = run;
-        }
-    }
-}
-
 static void DrawVuNeedle(int w, int h, float level)
 {
     const float a0 = 2.6179938f;
@@ -3085,9 +2937,7 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
         g_vuLiveW = 0;
     }
     level = (float)g_vuLiveW / 160.0f;
-    if (LoadVuFaceTga()) {
-        DrawVuFace(w, h);
-    } else if (g_origImagePanelPaintBg != NULL) {
+    if (g_origImagePanelPaintBg != NULL) {
         g_origImagePanelPaintBg(thisPtr);
     }
     DrawVuNeedle(w, h, level);

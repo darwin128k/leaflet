@@ -605,6 +605,80 @@ static void FitVoiceSliderRow(void *page, const char *caption, void *slider,
     }
 }
 
+static void FitMultiplayerPage(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    const int rowH = OPTIONS_TOGGLE_ROW_H;
+    const int preview = 32;
+    const int gap = 8;
+    int innerW;
+    int labelW;
+    int ctrlX;
+    int ctrlW;
+    int comboW;
+    int y;
+    static const char *kHide[] = {
+        "ModelImage", "URLLabel1", "Advanced", "High Quality Models",
+        "Player model", "Primary Color Slider", "Secondary Color Slider",
+        "Colors", "Label1", "Label3", "topHorizLeft", "topVertLeft",
+        "bottomHorizRight", "bottomVertRight"
+    };
+    int i;
+
+    (void)pageH;
+    if (page == NULL || LayoutFindChild(page, "NameEntry") == NULL) {
+        return;
+    }
+    innerW = pageW - pad * 2;
+    labelW = 180;
+    if (labelW > innerW / 2) {
+        labelW = innerW / 2;
+    }
+    if (labelW < 100) {
+        labelW = 100;
+    }
+    ctrlX = pad + labelW + 10;
+    ctrlW = pageW - pad - ctrlX;
+    if (ctrlW < 160) {
+        ctrlX = pageW - pad - 160;
+        if (ctrlX < pad + 90) {
+            ctrlX = pad + 90;
+        }
+        labelW = ctrlX - pad - 10;
+        ctrlW = pageW - pad - ctrlX;
+    }
+    comboW = (ctrlW - preview - gap * 2) / 2;
+    if (comboW < 72) {
+        comboW = 72;
+    }
+
+    y = pad;
+    LayoutNamed(page, "NameLabel", pad, y + 2, labelW, 24);
+    /* Same left edge as LogoImage / CrosshairImage — not stock xpos 300. */
+    LayoutNamed(page, "NameEntry", ctrlX, y, ctrlW, 28);
+    y += 36;
+
+    LayoutNamed(page, "Label2", pad, y + 4, labelW, 24);
+    LayoutNamed(page, "LogoImage", ctrlX, y, preview, preview);
+    LayoutNamed(page, "SpraypaintList", ctrlX + preview + gap, y + 4, comboW, 24);
+    LayoutNamed(page, "SpraypaintColor", ctrlX + preview + gap * 2 + comboW, y + 4, comboW, 24);
+    y += preview + 8;
+
+    LayoutNamed(page, "CrosshairLabel", pad, y + 4, labelW, 24);
+    LayoutNamed(page, "CrosshairImage", ctrlX, y, preview, preview);
+    LayoutNamed(page, "CrosshairSizeComboBox", ctrlX + preview + gap, y + 4, comboW, 24);
+    LayoutNamed(page, "CrosshairColorComboBox",
+                ctrlX + preview + gap * 2 + comboW, y + 4, comboW, 24);
+    y += preview + 8;
+
+    LayoutNamed(page, "TranslucentLabel", pad, y, labelW, rowH);
+    LayoutNamed(page, "CrosshairTranslucencyCheckbox", pad, y, innerW, rowH);
+
+    for (i = 0; i < (int)(sizeof(kHide) / sizeof(kHide[0])); i++) {
+        LayoutNamed(page, kHide[i], -4000, -4000, 1, 1);
+    }
+}
+
 static void FitVoicePage(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
@@ -913,6 +987,7 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
     if (LayoutFindChild(page, "voice_modenable") != NULL) {
         FitVoicePage(page, pageW, pageH);
     }
+    FitMultiplayerPage(page, pageW, pageH);
     FitVideoPage(page, pageW, pageH);
     FitAudioPage(page, pageW, pageH);
 }

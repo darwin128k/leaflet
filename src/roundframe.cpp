@@ -5,6 +5,7 @@
 #include "bgswitch.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef void(__thiscall *SetPosFn)(void *self, int x, int y);
@@ -76,6 +77,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_FRAME_PAINTBG_ALT     0x00023970u
 #define RVA_PROGRESSBAR_PAINTBG   0x000696b0u /* vgui2::ProgressBar::PaintBackground — cube segments */
 #define RVA_IMAGEPANEL_PAINTBG    0x00072740u /* ImagePanel::PaintBackground — TGA / scaleImage */
+#define RVA_CBITMAPIMAGE_PAINTBG  0x0002fb70u /* CBitmapImagePanel::PaintBackground — opaque IImage */
 #define RVA_PROGRESSBAR_VTABLE    0x000a1dccu
 #define RVA_SLIDER_VTABLE         0x000a194cu /* vgui2::Slider */
 #define RVA_CCVARSLIDER_VTABLE    0x00097a3cu /* CCvarSlider : Slider */
@@ -148,6 +150,7 @@ static PaintFn g_origPaintBorder = NULL;
 static PaintFn g_origFramePaintBgAlt = NULL;
 static PaintFn g_origProgressPaintBg = NULL;
 static PaintFn g_origImagePanelPaintBg = NULL;
+static PaintFn g_origBitmapImagePaintBg = NULL;
 static PaintFn g_origSliderPaint = NULL;
 static PaintFn g_origSliderPaintBg = NULL;
 static PaintFn g_origCvarSliderApply = NULL;
@@ -162,6 +165,7 @@ static BYTE g_paintBorderTramp[32];
 static BYTE g_framePaintBgAltTramp[32];
 static BYTE g_progressPaintBgTramp[32];
 static BYTE g_imagePanelPaintBgTramp[32];
+static BYTE g_bitmapImagePaintBgTramp[32];
 static BYTE g_sliderPaintTramp[32];
 static BYTE g_sliderPaintBgTramp[32];
 static BYTE g_cvarSliderApplyTramp[32];
@@ -199,11 +203,17 @@ static int g_voiceTrackW = 0;
 
 #define VU_FACE_MAX_W 256
 #define VU_FACE_MAX_H 128
+#define LOGO_BMP_MAX  256
 static unsigned char g_vuFaceBgra[VU_FACE_MAX_W * VU_FACE_MAX_H * 4];
 static int g_vuFaceW = 0;
 static int g_vuFaceH = 0;
 static int g_vuFaceLoaded = 0;
 static int g_vuFaceTried = 0;
+static unsigned char g_logoBgra[LOGO_BMP_MAX * LOGO_BMP_MAX * 4];
+static int g_logoW = 0;
+static int g_logoH = 0;
+static int g_logoLoaded = 0;
+static FILETIME g_logoMtime;
 
 /* Captured from the main-body fill inside DrawFilledRect_Hook so
  * RunRoundedBackground can trace a stroke around the exact same rounded
@@ -217,6 +227,7 @@ static int g_edgeRoundBottom = 0;
 static unsigned int g_edgeBodyColor = 0;
 
 static void EnsureSurfaceHooks(void);
+static int PaintLogoPreview(void *thisPtr, int anyBitmapPanel);
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom);
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb);
@@ -2438,6 +2449,9 @@ static void __fastcall PanelPaintBg_Hook(void *thisPtr)
     if (IsStaticTextPanel(thisPtr)) {
         return;
     }
+    if (PaintLogoPreview(thisPtr, 0)) {
+        return;
+    }
     if (IsOptionsInnerChrome(thisPtr)) {
         return;
     }
@@ -3132,6 +3146,201 @@ static int LoadVuFaceTga(void)
     return 1;
 }
 
+static int LoadGoldSrcBmp8(const char *path)
+{
+    FILE *f;
+    unsigned char fh[14];
+    unsigned char ih[40];
+    unsigned char pal[256][4];
+    unsigned char *row = NULL;
+    unsigned int offBits;
+    int w;
+    int h;
+    int bits;
+    int comp;
+    int palN;
+    int topDown;
+    int y;
+    int x;
+    int rowBytes;
+    size_t palBytes;
+
+    f = fopen(path, "rb");
+    if (f == NULL) {
+        return 0;
+    }
+    if (fread(fh, 1, 14, f) != 14 || fh[0] != 'B' || fh[1] != 'M') {
+        fclose(f);
+        return 0;
+    }
+    offBits = (unsigned int)fh[10] | ((unsigned int)fh[11] << 8)
+        | ((unsigned int)fh[12] << 16) | ((unsigned int)fh[13] << 24);
+    if (fread(ih, 1, 40, f) != 40) {
+        fclose(f);
+        return 0;
+    }
+    w = (int)ih[4] | ((int)ih[5] << 8) | ((int)ih[6] << 16) | ((int)ih[7] << 24);
+    h = (int)ih[8] | ((int)ih[9] << 8) | ((int)ih[10] << 16) | ((int)ih[11] << 24);
+    bits = (int)ih[14] | ((int)ih[15] << 8);
+    comp = (int)ih[16] | ((int)ih[17] << 8) | ((int)ih[18] << 16) | ((int)ih[19] << 24);
+    palN = (int)ih[32] | ((int)ih[33] << 8) | ((int)ih[34] << 16) | ((int)ih[35] << 24);
+    topDown = 0;
+    if (h < 0) {
+        h = -h;
+        topDown = 1;
+    }
+    if (w < 2 || h < 2 || w > LOGO_BMP_MAX || h > LOGO_BMP_MAX || bits != 8 || comp != 0) {
+        fclose(f);
+        return 0;
+    }
+    if (palN <= 0 || palN > 256) {
+        palN = 256;
+    }
+    palBytes = (size_t)palN * 4u;
+    memset(pal, 0, sizeof(pal));
+    if (fread(pal, 1, palBytes, f) != palBytes) {
+        fclose(f);
+        return 0;
+    }
+    if (fseek(f, (long)offBits, SEEK_SET) != 0) {
+        fclose(f);
+        return 0;
+    }
+    rowBytes = (w + 3) & ~3;
+    row = (unsigned char *)malloc((size_t)rowBytes);
+    if (row == NULL) {
+        fclose(f);
+        return 0;
+    }
+    for (y = 0; y < h; y++) {
+        int dstY = topDown ? y : (h - 1 - y);
+        if (fread(row, 1, (size_t)rowBytes, f) != (size_t)rowBytes) {
+            free(row);
+            fclose(f);
+            return 0;
+        }
+        for (x = 0; x < w; x++) {
+            unsigned char idx = row[x];
+            unsigned char *p = g_logoBgra + ((size_t)dstY * (size_t)w + (size_t)x) * 4u;
+            p[0] = pal[idx][0];
+            p[1] = pal[idx][1];
+            p[2] = pal[idx][2];
+            p[3] = idx;
+        }
+    }
+    free(row);
+    fclose(f);
+    /* Source spray BMPs keep the hole as black / the corner index. GameUI's
+     * remapped.bmp even stores the spray color on index 255, so `{` wad
+     * index-255 is the wrong key for this preview. */
+    {
+        unsigned char keyIdx = g_logoBgra[3];
+        int n = w * h;
+        int i;
+        for (i = 0; i < n; i++) {
+            unsigned char *p = g_logoBgra + (size_t)i * 4u;
+            unsigned char idx = p[3];
+            unsigned char b = p[0];
+            unsigned char g = p[1];
+            unsigned char r = p[2];
+            if (idx == keyIdx || (r | g | b) == 0) {
+                p[0] = 0;
+                p[1] = 0;
+                p[2] = 0;
+                p[3] = 0;
+            } else {
+                p[3] = 255;
+            }
+        }
+    }
+    g_logoW = w;
+    g_logoH = h;
+    g_logoLoaded = 1;
+    return 1;
+}
+
+static int RefreshLogoBmp(void)
+{
+    const char *root;
+    char path[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    int i;
+    static const char *kRel[] = {
+        "cstrike\\logos\\remapped.bmp",
+        "valve\\logos\\remapped.bmp"
+    };
+
+    root = BgSwitch_GetGameRoot();
+    if (root == NULL || root[0] == '\0') {
+        return g_logoLoaded;
+    }
+    for (i = 0; i < 2; i++) {
+        _snprintf(path, sizeof(path), "%s\\%s", root, kRel[i]);
+        if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) {
+            continue;
+        }
+        if (g_logoLoaded
+            && info.ftLastWriteTime.dwLowDateTime == g_logoMtime.dwLowDateTime
+            && info.ftLastWriteTime.dwHighDateTime == g_logoMtime.dwHighDateTime) {
+            return 1;
+        }
+        if (LoadGoldSrcBmp8(path)) {
+            g_logoMtime = info.ftLastWriteTime;
+            return 1;
+        }
+    }
+    return g_logoLoaded;
+}
+
+static int PaintLogoPreview(void *thisPtr, int anyBitmapPanel)
+{
+    int w = 0;
+    int h = 0;
+    int x;
+    int y;
+
+    if (thisPtr == NULL) {
+        return 0;
+    }
+    if (!anyBitmapPanel && lstrcmpiA(PanelName(thisPtr), "LogoImage") != 0) {
+        return 0;
+    }
+    if (g_GetSize == NULL) {
+        return 0;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 8 || h < 8) {
+        return 0;
+    }
+    if (!RefreshLogoBmp() || g_logoW < 2 || g_logoH < 2) {
+        return 0;
+    }
+    EnsureSurfaceHooks();
+    *(void **)((char *)thisPtr + OFF_PANEL_BORDER) = NULL;
+    for (y = 0; y < h; y++) {
+        int sy = (g_logoH * y) / h;
+        for (x = 0; x < w; x++) {
+            unsigned char *p;
+            int a;
+            uint32_t rgb;
+            int sx = (g_logoW * x) / w;
+            p = g_logoBgra + ((size_t)sy * (size_t)g_logoW + (size_t)sx) * 4u;
+            a = (int)p[3];
+            if (a < 12) {
+                continue;
+            }
+            rgb = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
+            if (a >= 248) {
+                SurfaceFill(x, y, x + 1, y + 1, ThemeRgbPacked(rgb));
+            } else {
+                SurfaceFill(x, y, x + 1, y + 1,
+                            MixRgbPair(rgb, g_theme.windowRgb, (float)a / 255.0f));
+            }
+        }
+    }
+    return 1;
+}
+
 static void DrawVuFace(int panelW, int panelH)
 {
     int x;
@@ -3277,6 +3486,16 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
     }
 }
 
+static void __fastcall BitmapImagePaintBg_Hook(void *thisPtr)
+{
+    if (PaintLogoPreview(thisPtr, 1)) {
+        return;
+    }
+    if (g_origBitmapImagePaintBg != NULL) {
+        g_origBitmapImagePaintBg(thisPtr);
+    }
+}
+
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
     if (IsComboBoxButton(thisPtr) || IsStyledTextField(thisPtr)) {
@@ -3386,6 +3605,13 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
                         g_imagePanelPaintBgTramp, sizeof(g_imagePanelPaintBgTramp),
                         (void *)ImagePanelPaintBg_Hook, &g_origImagePanelPaintBg,
                         "ImagePanelPaintBackground");
+    }
+    {
+        static const BYTE kBmpBgPrologue[6] = { 0x83, 0xEC, 0x0C, 0x56, 0x8B, 0xF1 };
+        InstallNearHook(base + RVA_CBITMAPIMAGE_PAINTBG, 6, kBmpBgPrologue,
+                        g_bitmapImagePaintBgTramp, sizeof(g_bitmapImagePaintBgTramp),
+                        (void *)BitmapImagePaintBg_Hook, &g_origBitmapImagePaintBg,
+                        "CBitmapImagePanelPaintBackground");
     }
     {
         static const BYTE kSliderPaintPrologue[8] = { 0x56, 0x8B, 0xF1, 0xE8, 0x18, 0x00, 0x00, 0x00 };

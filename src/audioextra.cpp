@@ -25,8 +25,10 @@ typedef void(__thiscall *PaintFn)(void *self);
 #define RVA_COMBO_ACTIVATE  0x00031310u /* CLabeledCommandComboBox::ActivateItem(int) */
 #define RVA_CCVARSLIDER_VT  0x00097a3cu
 #define RVA_CCVARSLIDER_CTOR 0x000301C0u
+#define RVA_SLIDER_CTOR     0x000668C0u /* vgui2::Slider::Slider(Panel*, const char*) */
 #define RVA_GAMEUI_NEW      0x0007A483u
 #define CCVARSLIDER_SIZE    0x108
+#define SLIDER_SIZE         0xB4
 #define VT_PAINT_INDEX      107
 #define OFF_SETVISIBLE_VT   0x74 /* Panel::SetVisible; CCvarSlider slot 0x70 is the deleting dtor */
 #define OFF_SETENABLED_VT   0xBC /* Panel::SetEnabled; COptionsSubVoice mic-test */
@@ -93,6 +95,7 @@ static void *g_gateSlider = NULL;
 static int g_gateDirty = 0;
 static void *g_monitorSlider = NULL;
 static int g_monitorDirty = 0;
+static void *g_voiceMonitorPanel = NULL;
 
 static int CvarExists(const char *name);
 static float CvarGet(const char *name);
@@ -371,8 +374,26 @@ static void SyncVoiceExtraEnabled(void)
     receive = FindChild(g_voicePage, "VoiceReceive");
     gate = FindChild(g_voicePage, "NoiseGate");
     gateLabel = FindChild(g_voicePage, "NoiseGateLabel");
-    mon = FindChild(g_voicePage, "VoiceMonitor");
-    monLabel = FindChild(g_voicePage, "VoiceMonitorLabel");
+    mon = FindChild(g_voicePage, "SidTone");
+    if (mon == NULL) {
+        mon = FindChild(g_voicePage, "MvMonitor");
+    }
+    if (mon == NULL) {
+        mon = FindChild(g_voicePage, "Monitor");
+    }
+    if (mon == NULL) {
+        mon = FindChild(g_voicePage, "VoiceMonitor");
+    }
+    monLabel = FindChild(g_voicePage, "SidToneLabel");
+    if (monLabel == NULL) {
+        monLabel = FindChild(g_voicePage, "MvMonitorLabel");
+    }
+    if (monLabel == NULL) {
+        monLabel = FindChild(g_voicePage, "MonitorLabel");
+    }
+    if (monLabel == NULL) {
+        monLabel = FindChild(g_voicePage, "VoiceMonitorLabel");
+    }
     en = (receive == NULL) ? 1 : SliderPanelEnabled(receive);
     if (gate != NULL) {
         SetPanelEnabled(gate, en);
@@ -440,6 +461,53 @@ static void ShowNamed(void *page, const char *name)
     }
 }
 
+static void *CreatePlainVoiceSlider(void *parent, const char *name)
+{
+    typedef void *(__cdecl *GameUiNewFn)(unsigned int);
+    typedef void (__thiscall *SliderCtorFn)(void *self, void *par, const char *panelName);
+    GameUiNewFn opnew;
+    SliderCtorFn ctor;
+    void *sl;
+    void **vt;
+    SetVisibleFn vis;
+
+    if (parent == NULL || g_gameUiBase == NULL || name == NULL) {
+        return NULL;
+    }
+    opnew = (GameUiNewFn)(g_gameUiBase + RVA_GAMEUI_NEW);
+    ctor = (SliderCtorFn)(g_gameUiBase + RVA_SLIDER_CTOR);
+    sl = NULL;
+    __try {
+        sl = opnew(SLIDER_SIZE);
+        if (sl == NULL) {
+            return NULL;
+        }
+        ctor(sl, parent, name);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return NULL;
+    }
+    if (IsBadReadPtr((char *)sl + OFF_SLIDER_MAX, 4)) {
+        return NULL;
+    }
+    *(int *)((char *)sl + OFF_SLIDER_MIN) = 0;
+    *(int *)((char *)sl + OFF_SLIDER_MAX) = 100;
+    *(int *)((char *)sl + OFF_SLIDER_VALUE) = 100;
+    if (g_SetSize != NULL) {
+        g_SetSize(sl, 160, 28);
+    }
+    vt = *(void ***)sl;
+    if (vt != NULL) {
+        vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
+        if (vis != NULL) {
+            __try {
+                vis(sl, 1);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+    }
+    return sl;
+}
+
 static void *CreateNamedVoiceSlider(void *parent, const char *name, const char *label,
                                     float minv, float maxv, const char *cvar)
 {
@@ -492,8 +560,9 @@ static void *CreateNoiseGateSlider(void *parent)
 
 static void *CreateVoiceMonitorSlider(void *parent)
 {
-    return CreateNamedVoiceSlider(parent, "VoiceMonitor", "Voice monitor",
-                                  0.0f, MV_MONITOR_SLIDER_MAX, "mv_monitor");
+    /* Plain vgui Slider — GameUI LoadControlSettings skips this extra track
+     * in OptionsSubVoice.res (label loads, slider does not). */
+    return CreatePlainVoiceSlider(parent, "SidTone");
 }
 
 static void SyncHiddenQualityCombo(int highOn)
@@ -523,7 +592,9 @@ static void __fastcall CvarSliderPaint_Hook(void *self)
      * knob. For the HEV slider we retargeted to al_doppler that fight the
      * mouse (0–1 suit scale vs 0–2), so skip it and only draw our track. */
     if (lstrcmpiA(name, "Suit Slider") == 0 || lstrcmpiA(name, "al_doppler") == 0
-        || lstrcmpiA(name, "NoiseGate") == 0 || lstrcmpiA(name, "VoiceMonitor") == 0) {
+        || lstrcmpiA(name, "NoiseGate") == 0 || lstrcmpiA(name, "SidTone") == 0
+        || lstrcmpiA(name, "MvMonitor") == 0 || lstrcmpiA(name, "Monitor") == 0
+        || lstrcmpiA(name, "VoiceMonitor") == 0) {
         RoundFrame_PaintOptionsSlider(self);
         return;
     }
@@ -630,7 +701,8 @@ void AudioExtra_OnSliderPaint(void *slider)
         }
         return;
     }
-    if (lstrcmpiA(name, "VoiceMonitor") == 0) {
+    if (lstrcmpiA(name, "SidTone") == 0 || lstrcmpiA(name, "MvMonitor") == 0
+        || lstrcmpiA(name, "Monitor") == 0 || lstrcmpiA(name, "VoiceMonitor") == 0) {
         if (!CvarExists("mv_monitor")) {
             return;
         }
@@ -750,6 +822,7 @@ void AudioExtra_Init(HMODULE hGameUI)
     g_gateDirty = 0;
     g_monitorSlider = NULL;
     g_monitorDirty = 0;
+    g_voiceMonitorPanel = NULL;
     g_gameUiBase = (BYTE *)hGameUI;
     g_FindChild = NULL;
     g_SetPos = NULL;
@@ -850,22 +923,15 @@ void AudioExtra_SyncToggle(void *btn)
 
 void AudioExtra_BindVoicePage(void *voicePage)
 {
+    void *sid;
+
     if (voicePage == NULL) {
         return;
     }
     MigrateVoiceTweakFileOnce();
-    if (FindChild(voicePage, "NoiseGate") == NULL) {
-        CreateNoiseGateSlider(voicePage);
-    }
-    if (FindChild(voicePage, "VoiceMonitor") == NULL) {
-        CreateVoiceMonitorSlider(voicePage);
-    }
-    ShowNamed(voicePage, "NoiseGate");
-    ShowNamed(voicePage, "NoiseGateLabel");
-    ShowNamed(voicePage, "VoiceMonitor");
-    ShowNamed(voicePage, "VoiceMonitorLabel");
     if (g_voicePage != voicePage) {
         g_voicePage = voicePage;
+        g_voiceMonitorPanel = NULL;
         g_micSlider = NULL;
         g_micBoostBtn = NULL;
         g_micVolDirty = 0;
@@ -873,6 +939,39 @@ void AudioExtra_BindVoicePage(void *voicePage)
         g_gateSlider = NULL;
         g_monitorSlider = NULL;
     }
+    if (FindChild(voicePage, "NoiseGate") == NULL) {
+        CreateNoiseGateSlider(voicePage);
+    }
+    sid = FindChild(voicePage, "SidTone");
+    if (sid == NULL && g_voiceMonitorPanel == NULL) {
+        sid = CreateVoiceMonitorSlider(voicePage);
+    }
+    if (sid == NULL) {
+        sid = g_voiceMonitorPanel;
+    }
+    g_voiceMonitorPanel = sid;
+    ShowNamed(voicePage, "NoiseGate");
+    ShowNamed(voicePage, "NoiseGateLabel");
+    ShowNamed(voicePage, "SidTone");
+    ShowNamed(voicePage, "SidToneLabel");
+    if (sid != NULL) {
+        void **vt = *(void ***)sid;
+        SetVisibleFn vis;
+        if (vt != NULL) {
+            vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
+            if (vis != NULL) {
+                __try {
+                    vis(sid, 1);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                }
+            }
+        }
+    }
+}
+
+void *AudioExtra_VoiceMonitorPanel(void)
+{
+    return g_voiceMonitorPanel;
 }
 
 float AudioExtra_VuLevel(int right)

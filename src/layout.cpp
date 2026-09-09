@@ -734,9 +734,23 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     FitVoiceSliderRow(page, "NoiseGateLabel", LayoutFindChild(page, "NoiseGate"),
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
     y += sliderH + 4;
-    FitVoiceSliderRow(page, "VoiceMonitorLabel", LayoutFindChild(page, "VoiceMonitor"),
-                      pad, y, labelW, rightX, trackW, labelH, sliderH);
-    y += sliderH + 8;
+    /* Identical row to NoiseGate. SidTone often missing from .res load — use
+     * the code-created panel pointer BindVoicePage cached. */
+    {
+        void *mon = LayoutFindChild(page, "SidTone");
+        if (mon == NULL) {
+            mon = AudioExtra_VoiceMonitorPanel();
+        }
+        FitVoiceSliderRow(page, "SidToneLabel", mon, pad, y, labelW, rightX,
+                          trackW, labelH, sliderH);
+        y += sliderH + 8;
+    }
+    LayoutNamed(page, "MvMonitor", -4000, -4000, 1, 1);
+    LayoutNamed(page, "MvMonitorLabel", -4000, -4000, 1, 1);
+    LayoutNamed(page, "VoiceMonitor", -4000, -4000, 1, 1);
+    LayoutNamed(page, "VoiceMonitorLabel", -4000, -4000, 1, 1);
+    LayoutNamed(page, "Monitor", -4000, -4000, 1, 1);
+    LayoutNamed(page, "MonitorLabel", -4000, -4000, 1, 1);
 
     {
         int testY = pageH - pad - rowH;

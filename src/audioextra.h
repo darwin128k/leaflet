@@ -11,6 +11,7 @@ void AudioExtra_Tick(void);
 void AudioExtra_BindPage(void *audioPage);
 void AudioExtra_BindVoicePage(void *voicePage);
 float AudioExtra_VuLevel(int right);
+void *AudioExtra_VoiceMonitorPanel(void);
 void AudioExtra_SyncToggle(void *btn);
 void AudioExtra_OnSliderPaint(void *slider);
 void AudioExtra_EnsureDopplerSlider(void *audioPage);

@@ -26,29 +26,5 @@ if errorlevel 1 (
 
 cd ..
 
-set ROOT=.\
-if exist ..\hw.dll (
-    set ROOT=..\
-) else if exist ..\..\hw.dll (
-    set ROOT=..\..\
-)
-
-copy /Y build\leaflet.dll "%ROOT%leaflet.dll" >nul
-if errorlevel 1 (
-    echo Built OK, but could not copy leaflet.dll to game root -- is the game running?
-    exit /b 1
-)
-if exist "%ROOT%vellum.dll" del /Q "%ROOT%vellum.dll"
-if exist "%ROOT%GameUI_hook.dll" del /Q "%ROOT%GameUI_hook.dll"
-
-set ORIG_GAMEUI=%ROOT%valve\cl_dlls\GameUI_orig.dll
-if exist "%ORIG_GAMEUI%" (
-    copy /Y "%ORIG_GAMEUI%" "%ROOT%valve\cl_dlls\GameUI.dll" >nul
-    if errorlevel 1 (
-        echo Could not restore original GameUI.dll -- is the game running?
-        exit /b 1
-    )
-)
-
-echo Build OK: leaflet.dll
+echo Build OK: build\leaflet.dll
 endlocal

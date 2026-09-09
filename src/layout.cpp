@@ -1632,10 +1632,8 @@ static void DrawComboMenuHighlights(void *thisPtr)
             || ItemIsDepressedQuiet(visibleItems[i])
             || ItemIsSelectedQuiet(visibleItems[i]);
         if (!hot) {
-            MakeItemFillTransparent(visibleItems[i]);
             continue;
         }
-        MakeItemFillTransparent(visibleItems[i]);
         g_GetPos(visibleItems[i], &x, &y);
         g_GetSize(visibleItems[i], &w, &h);
         if (w < 12 || h < 10) {

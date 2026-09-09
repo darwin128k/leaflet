@@ -1088,7 +1088,8 @@ void RoundFrame_FillCapsule(int x, int y, int w, int h, unsigned int rgb)
     }
     EnsureSurfaceHooks();
     r = CapsuleRadius(w, h);
-    DrawAaRoundedFillAt(x, y, w, h, r, rgb, g_theme.windowRgb, 1, 1);
+    /* Scanline fill — per-pixel AA here froze combo dropdowns. */
+    DrawRoundedFillAt(x, y, w, h, r, ThemeRgbPacked(rgb), 1, 1);
 }
 
 static int IsMouseToggleName(const char *name)
@@ -3259,16 +3260,65 @@ static int LoadGoldSrcBmp8(const char *path)
     return 1;
 }
 
+static void BlitBgraPanel(const unsigned char *bgra, int srcW, int srcH, int dstW, int dstH)
+{
+    int y;
+    int x;
+
+    if (bgra == NULL || srcW < 1 || srcH < 1 || dstW < 1 || dstH < 1) {
+        return;
+    }
+    for (y = 0; y < dstH; y++) {
+        int sy = (srcH * y) / dstH;
+        int runX = -1;
+        unsigned int runPacked = 0;
+        for (x = 0; x <= dstW; x++) {
+            int a = 0;
+            unsigned int packed = 0;
+            if (x < dstW) {
+                int sx = (srcW * x) / dstW;
+                const unsigned char *p = bgra + ((size_t)sy * (size_t)srcW + (size_t)sx) * 4u;
+                a = (int)p[3];
+                if (a >= 12) {
+                    uint32_t rgb = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
+                    packed = (a >= 248) ? ThemeRgbPacked(rgb)
+                        : MixRgbPair(rgb, g_theme.windowRgb, (float)a / 255.0f);
+                }
+            }
+            if (a >= 12 && runX >= 0 && packed == runPacked) {
+                continue;
+            }
+            if (runX >= 0) {
+                SurfaceFill(runX, y, x, y + 1, runPacked);
+            }
+            if (a >= 12 && x < dstW) {
+                runX = x;
+                runPacked = packed;
+            } else {
+                runX = -1;
+            }
+        }
+    }
+}
+
 static int RefreshLogoBmp(void)
 {
     const char *root;
     char path[MAX_PATH];
     WIN32_FILE_ATTRIBUTE_DATA info;
     int i;
+    DWORD now;
+    static DWORD s_logoStatTick;
     static const char *kRel[] = {
         "cstrike\\logos\\remapped.bmp",
         "valve\\logos\\remapped.bmp"
     };
+
+    now = GetTickCount();
+    if (g_logoLoaded && (now - s_logoStatTick) < 150u) {
+        return 1;
+    }
+    s_logoStatTick = now;
 
     root = BgSwitch_GetGameRoot();
     if (root == NULL || root[0] == '\0') {
@@ -3296,8 +3346,6 @@ static int PaintLogoPreview(void *thisPtr, int anyBitmapPanel)
 {
     int w = 0;
     int h = 0;
-    int x;
-    int y;
 
     if (thisPtr == NULL) {
         return 0;
@@ -3317,59 +3365,16 @@ static int PaintLogoPreview(void *thisPtr, int anyBitmapPanel)
     }
     EnsureSurfaceHooks();
     *(void **)((char *)thisPtr + OFF_PANEL_BORDER) = NULL;
-    for (y = 0; y < h; y++) {
-        int sy = (g_logoH * y) / h;
-        for (x = 0; x < w; x++) {
-            unsigned char *p;
-            int a;
-            uint32_t rgb;
-            int sx = (g_logoW * x) / w;
-            p = g_logoBgra + ((size_t)sy * (size_t)g_logoW + (size_t)sx) * 4u;
-            a = (int)p[3];
-            if (a < 12) {
-                continue;
-            }
-            rgb = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
-            if (a >= 248) {
-                SurfaceFill(x, y, x + 1, y + 1, ThemeRgbPacked(rgb));
-            } else {
-                SurfaceFill(x, y, x + 1, y + 1,
-                            MixRgbPair(rgb, g_theme.windowRgb, (float)a / 255.0f));
-            }
-        }
-    }
+    BlitBgraPanel(g_logoBgra, g_logoW, g_logoH, w, h);
     return 1;
 }
 
 static void DrawVuFace(int panelW, int panelH)
 {
-    int x;
-    int y;
-
     if (!LoadVuFaceTga() || panelW <= 0 || panelH <= 0) {
         return;
     }
-    for (y = 0; y < panelH; y++) {
-        int sy = (g_vuFaceH * y) / panelH;
-        for (x = 0; x < panelW; x++) {
-            unsigned char *p;
-            int a;
-            uint32_t rgb;
-            int sx = (g_vuFaceW * x) / panelW;
-            p = g_vuFaceBgra + ((size_t)sy * (size_t)g_vuFaceW + (size_t)sx) * 4u;
-            a = (int)p[3];
-            if (a < 12) {
-                continue;
-            }
-            rgb = ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
-            if (a >= 248) {
-                SurfaceFill(x, y, x + 1, y + 1, ThemeRgbPacked(rgb));
-            } else {
-                SurfaceFill(x, y, x + 1, y + 1,
-                            MixRgbPair(rgb, g_theme.windowRgb, (float)a / 255.0f));
-            }
-        }
-    }
+    BlitBgraPanel(g_vuFaceBgra, g_vuFaceW, g_vuFaceH, panelW, panelH);
 }
 
 static void DrawAaNeedle(float x0, float y0, float x1, float y1, uint32_t rgb)

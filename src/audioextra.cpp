@@ -2,6 +2,8 @@
 #include "roundframe.h"
 #include "log.h"
 #include "bgswitch.h"
+#include "ui_api.h"
+#include "ui_caps.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -25,10 +27,8 @@ typedef void(__thiscall *PaintFn)(void *self);
 #define RVA_COMBO_ACTIVATE  0x00031310u /* CLabeledCommandComboBox::ActivateItem(int) */
 #define RVA_CCVARSLIDER_VT  0x00097a3cu
 #define RVA_CCVARSLIDER_CTOR 0x000301C0u
-#define RVA_SLIDER_CTOR     0x000668C0u /* vgui2::Slider::Slider(Panel*, const char*) */
 #define RVA_GAMEUI_NEW      0x0007A483u
 #define CCVARSLIDER_SIZE    0x108
-#define SLIDER_SIZE         0xB4
 #define VT_PAINT_INDEX      107
 #define OFF_SETVISIBLE_VT   0x74 /* Panel::SetVisible; CCvarSlider slot 0x70 is the deleting dtor */
 #define OFF_SETENABLED_VT   0xBC /* Panel::SetEnabled; COptionsSubVoice mic-test */
@@ -461,53 +461,6 @@ static void ShowNamed(void *page, const char *name)
     }
 }
 
-static void *CreatePlainVoiceSlider(void *parent, const char *name)
-{
-    typedef void *(__cdecl *GameUiNewFn)(unsigned int);
-    typedef void (__thiscall *SliderCtorFn)(void *self, void *par, const char *panelName);
-    GameUiNewFn opnew;
-    SliderCtorFn ctor;
-    void *sl;
-    void **vt;
-    SetVisibleFn vis;
-
-    if (parent == NULL || g_gameUiBase == NULL || name == NULL) {
-        return NULL;
-    }
-    opnew = (GameUiNewFn)(g_gameUiBase + RVA_GAMEUI_NEW);
-    ctor = (SliderCtorFn)(g_gameUiBase + RVA_SLIDER_CTOR);
-    sl = NULL;
-    __try {
-        sl = opnew(SLIDER_SIZE);
-        if (sl == NULL) {
-            return NULL;
-        }
-        ctor(sl, parent, name);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return NULL;
-    }
-    if (IsBadReadPtr((char *)sl + OFF_SLIDER_MAX, 4)) {
-        return NULL;
-    }
-    *(int *)((char *)sl + OFF_SLIDER_MIN) = 0;
-    *(int *)((char *)sl + OFF_SLIDER_MAX) = 100;
-    *(int *)((char *)sl + OFF_SLIDER_VALUE) = 100;
-    if (g_SetSize != NULL) {
-        g_SetSize(sl, 160, 28);
-    }
-    vt = *(void ***)sl;
-    if (vt != NULL) {
-        vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
-        if (vis != NULL) {
-            __try {
-                vis(sl, 1);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-            }
-        }
-    }
-    return sl;
-}
-
 static void *CreateNamedVoiceSlider(void *parent, const char *name, const char *label,
                                     float minv, float maxv, const char *cvar)
 {
@@ -560,9 +513,9 @@ static void *CreateNoiseGateSlider(void *parent)
 
 static void *CreateVoiceMonitorSlider(void *parent)
 {
-    /* Plain vgui Slider — GameUI LoadControlSettings skips this extra track
-     * in OptionsSubVoice.res (label loads, slider does not). */
-    return CreatePlainVoiceSlider(parent, "SidTone");
+    /* Plain vgui Slider via ui_api — GameUI LoadControlSettings often skips
+     * this extra track in OptionsSubVoice.res (label loads, slider does not). */
+    return Ui_EnsureSlider(parent, "SidTone", 0, 100, 100);
 }
 
 static void SyncHiddenQualityCombo(int highOn)
@@ -929,6 +882,7 @@ void AudioExtra_BindVoicePage(void *voicePage)
         return;
     }
     MigrateVoiceTweakFileOnce();
+    UiCaps_Refresh();
     if (g_voicePage != voicePage) {
         g_voicePage = voicePage;
         g_voiceMonitorPanel = NULL;
@@ -939,34 +893,24 @@ void AudioExtra_BindVoicePage(void *voicePage)
         g_gateSlider = NULL;
         g_monitorSlider = NULL;
     }
+    if (!UiCaps_Get()->metaVoice) {
+        Ui_Hide(voicePage, "NoiseGate");
+        Ui_Hide(voicePage, "NoiseGateLabel");
+        Ui_Hide(voicePage, "SidTone");
+        Ui_Hide(voicePage, "SidToneLabel");
+        g_voiceMonitorPanel = NULL;
+        return;
+    }
     if (FindChild(voicePage, "NoiseGate") == NULL) {
         CreateNoiseGateSlider(voicePage);
     }
-    sid = FindChild(voicePage, "SidTone");
-    if (sid == NULL && g_voiceMonitorPanel == NULL) {
-        sid = CreateVoiceMonitorSlider(voicePage);
-    }
-    if (sid == NULL) {
-        sid = g_voiceMonitorPanel;
-    }
+    sid = Ui_EnsureSlider(voicePage, "SidTone", 0, 100, 100);
     g_voiceMonitorPanel = sid;
     ShowNamed(voicePage, "NoiseGate");
     ShowNamed(voicePage, "NoiseGateLabel");
     ShowNamed(voicePage, "SidTone");
     ShowNamed(voicePage, "SidToneLabel");
-    if (sid != NULL) {
-        void **vt = *(void ***)sid;
-        SetVisibleFn vis;
-        if (vt != NULL) {
-            vis = (SetVisibleFn)vt[OFF_SETVISIBLE_VT / sizeof(void *)];
-            if (vis != NULL) {
-                __try {
-                    vis(sid, 1);
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                }
-            }
-        }
-    }
+    Ui_Show(sid);
 }
 
 void *AudioExtra_VoiceMonitorPanel(void)

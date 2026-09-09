@@ -13,8 +13,12 @@ typedef struct OverlayTheme {
     int borderWidth;
 } OverlayTheme;
 
-/* Reads cstrike/resource/ClientScheme.res, then platform TrackerScheme.
- * Missing keys keep the matte preloader defaults. */
+/* Reads platform TrackerScheme (and future theme JSON). Missing keys keep
+ * the matte preloader defaults. */
 void OverlayTheme_Load(OverlayTheme *out);
+
+/* Cached theme after OverlayTheme_Load / UiTheme_Reload. */
+const OverlayTheme *UiTheme_Current(void);
+void UiTheme_Reload(void);
 
 #endif

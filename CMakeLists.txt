@@ -36,7 +36,17 @@ set(LEAFLET_SOURCES
     src/scheme.cpp
     src/prefetch.cpp
     src/overlay.cpp
+    src/vgui_bridge.cpp
+    src/ui_api.cpp
+    src/ui_layout.cpp
+    src/ui_caps.cpp
 )
+
+# MetaHook RapidJSON (header-only) — themes / layout manifests later.
+set(LEAFLET_RAPIDJSON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../metahook/thirdparty/rapidjson/include")
+if (NOT EXISTS "${LEAFLET_RAPIDJSON_DIR}/rapidjson/document.h")
+    set(LEAFLET_RAPIDJSON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../metaaudio/externals/MetaHookSv/thirdparty/rapidjson/include")
+endif()
 
 if (LEAFLET_LVGL)
     set(LV_BUILD_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/lv_conf.h" CACHE PATH "" FORCE)
@@ -54,20 +64,24 @@ endif()
 
 add_library(leaflet SHARED ${LEAFLET_SOURCES})
 
+target_include_directories(leaflet PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${LEAFLET_RAPIDJSON_DIR}"
+)
 target_link_libraries(leaflet PRIVATE user32 advapi32 gdi32 ws2_32 CURL::libcurl)
-target_compile_definitions(leaflet PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_definitions(leaflet PRIVATE _CRT_SECURE_NO_WARNINGS LEAFLET_BUILD)
 if (MSVC)
     target_compile_options(leaflet PRIVATE /utf-8)
 endif()
 
-    if (LEAFLET_LVGL)
-        target_compile_definitions(leaflet PRIVATE LEAFLET_LVGL=1)
-        target_include_directories(leaflet PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-        target_link_libraries(leaflet PRIVATE lvgl)
-        if (TARGET lvgl)
-            target_compile_definitions(lvgl PUBLIC LV_CONF_INCLUDE_SIMPLE)
-            target_include_directories(lvgl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-        endif()
+if (LEAFLET_LVGL)
+    target_compile_definitions(leaflet PRIVATE LEAFLET_LVGL=1)
+    target_link_libraries(leaflet PRIVATE lvgl)
+    if (TARGET lvgl)
+        target_compile_definitions(lvgl PUBLIC LV_CONF_INCLUDE_SIMPLE)
+        target_include_directories(lvgl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
     endif()
+endif()
 
 set_target_properties(leaflet PROPERTIES OUTPUT_NAME leaflet)

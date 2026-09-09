@@ -224,3 +224,20 @@ void OverlayTheme_Load(OverlayTheme *out)
     path[sizeof(path) - 1] = '\0';
     ApplyFile(path, out);
 }
+
+static OverlayTheme g_uiTheme;
+static int g_uiThemeLoaded = 0;
+
+void UiTheme_Reload(void)
+{
+    OverlayTheme_Load(&g_uiTheme);
+    g_uiThemeLoaded = 1;
+}
+
+const OverlayTheme *UiTheme_Current(void)
+{
+    if (!g_uiThemeLoaded) {
+        UiTheme_Reload();
+    }
+    return &g_uiTheme;
+}

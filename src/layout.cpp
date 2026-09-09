@@ -4,6 +4,11 @@
 #include "roundframe.h"
 #include "prefetch.h"
 #include "audioextra.h"
+#include "ui_api.h"
+#include "ui_layout.h"
+#include "ui_caps.h"
+#include "vgui_bridge.h"
+#include "scheme.h"
 #include <math.h>
 #include <string.h>
 
@@ -87,6 +92,7 @@ static void InstallBasePanelLayoutHook(BYTE *base);
 static void InstallPropertySheetLayoutHook(BYTE *base);
 static void InstallAdvancedOptionsTab(BYTE *base);
 static void InstallPanelListPaddingHook(BYTE *base);
+static void __fastcall PanelListLayout_Hook(void *thisPtr);
 static void ForceSchemeLogoSize(const char *path, int wide, int tall);
 
 #define RVA_COPTIONSSUBVIDEO_VTABLE 0x0009c58cu
@@ -389,19 +395,13 @@ static void LayoutNamed(void *page, const char *name, int x, int y, int w, int h
 #define LABEL_SETCONTENTALIGNMENT_VT 0x22c
 #define LABEL_ALIGN_WEST 3
 
-static void LayoutCaption(void *page, const char *name, int x, int y, int w, int h)
+static void StyleCaption(void *c)
 {
-    void *c;
     void **vt;
     SetTextInsetFn setInset;
     SetIntFn setAlign;
-    c = LayoutFindChild(page, name);
     if (c == NULL) {
         return;
-    }
-    g_SetPos(c, x, y);
-    if (w > 0 && h > 0) {
-        g_SetSize(c, w, h);
     }
     vt = *(void ***)c;
     if (vt == NULL) {
@@ -415,6 +415,20 @@ static void LayoutCaption(void *page, const char *name, int x, int y, int w, int
     if (setAlign != NULL) {
         setAlign(c, LABEL_ALIGN_WEST);
     }
+}
+
+static void LayoutCaption(void *page, const char *name, int x, int y, int w, int h)
+{
+    void *c;
+    c = LayoutFindChild(page, name);
+    if (c == NULL) {
+        return;
+    }
+    g_SetPos(c, x, y);
+    if (w > 0 && h > 0) {
+        g_SetSize(c, w, h);
+    }
+    StyleCaption(c);
 }
 
 #define OFF_IMAGEPANEL_SCALEIMAGE 0x80 /* ImagePanel::m_bScaleImage; ApplySettings writes [esi+0x80] */
@@ -520,89 +534,106 @@ static void FitAudioPage(void *page, int pageW, int pageH)
     const int rowH = OPTIONS_TOGGLE_ROW_H;
     const int sliderH = 48;
     const int labelH = 20;
-    int colW;
-    int leftX;
-    int rightX;
-    int y;
-    int rightY;
+    const int hasMetaAudio = AudioExtra_HasMetaAudio();
+    const UiGridColumn pageColumns[] = {
+        { 5000, 160, 0 },
+        { 5000, 160, 0 }
+    };
+    const UiGridColumn oneColumn[] = {
+        { 10000, 0, 0 }
+    };
+    UiGrid pageGrid;
+    UiGrid leftGrid;
+    UiGrid rightGrid;
+    UiRect leftRect;
+    UiRect rightRect;
+    UiTableCell leftCells[6];
+    UiTableRow leftRows[6];
+    UiTableCell rightCells[6];
+    UiTableRow rightRows[6];
+    int leftCount = 0;
+    int rightCount = 0;
+    int i;
+
     if (page == NULL || LayoutFindChild(page, "SFX Slider") == NULL) {
         return;
     }
-    colW = (pageW - pad * 3) / 2;
-    if (colW < 160) {
-        colW = pageW - pad * 2;
-    }
-    leftX = pad;
-    rightX = pad + colW + pad;
-    if (rightX + 80 > pageW) {
-        rightX = pad;
-    }
 
-    y = pad;
-    LayoutCaption(page, "sfx label", leftX, y, colW, labelH);
-    y += 22;
-    LayoutNamed(page, "SFX Slider", leftX, y, colW, sliderH);
-    y += sliderH + 8;
-    LayoutCaption(page, "mp3 label", leftX, y, colW, labelH);
-    y += 22;
-    LayoutNamed(page, "MP3 Volume", leftX, y, colW, sliderH);
-    if (AudioExtra_HasMetaAudio()) {
+    UiGrid_Init(&pageGrid, pad, pad, pageW - pad * 2, pageH - pad * 2,
+                pad, pageColumns, 2);
+    leftRect = UiGrid_Cell(&pageGrid, 0, 1);
+    rightRect = UiGrid_Cell(&pageGrid, 1, 1);
+    UiGrid_Init(&leftGrid, leftRect.x, leftRect.y, leftRect.w, leftRect.h,
+                0, oneColumn, 1);
+    UiGrid_Init(&rightGrid, rightRect.x, rightRect.y, rightRect.w, rightRect.h,
+                0, oneColumn, 1);
+
+#define AUDIO_LEFT_ROW(controlName, controlH, after)                         \
+    do {                                                                     \
+        leftCells[leftCount] = { controlName, NULL, 0, 1, controlH,          \
+                                 UI_ALIGN_START };                            \
+        leftRows[leftCount] = { &leftCells[leftCount], 1, controlH, after }; \
+        leftCount++;                                                         \
+    } while (0)
+
+#define AUDIO_RIGHT_ROW(controlName)                                         \
+    do {                                                                     \
+        rightCells[rightCount] = { controlName, NULL, 0, 1, rowH,            \
+                                   UI_ALIGN_START };                          \
+        rightRows[rightCount] = { &rightCells[rightCount], 1, rowH, 6 };     \
+        rightCount++;                                                        \
+    } while (0)
+
+    AUDIO_LEFT_ROW("sfx label", labelH, 2);
+    AUDIO_LEFT_ROW("SFX Slider", sliderH, 8);
+    AUDIO_LEFT_ROW("mp3 label", labelH, 2);
+    AUDIO_LEFT_ROW("MP3 Volume", sliderH, hasMetaAudio ? 8 : 0);
+    if (hasMetaAudio) {
         AudioExtra_EnsureDopplerSlider(page);
-        y += sliderH + 8;
-        LayoutCaption(page, "al_doppler_label", leftX, y, colW, labelH);
-        y += 22;
-        LayoutNamed(page, "Suit Slider", leftX, y, colW, sliderH);
+        AUDIO_LEFT_ROW("al_doppler_label", labelH, 2);
+        AUDIO_LEFT_ROW("Suit Slider", sliderH, 0);
     } else {
-        LayoutNamed(page, "al_doppler_label", -4000, -4000, 1, 1);
-        LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
+        Ui_Hide(page, "al_doppler_label");
+        Ui_Hide(page, "Suit Slider");
     }
 
-    rightY = pad;
-    LayoutNamed(page, "hisound", rightX, rightY, colW, rowH);
-    rightY += rowH + 6;
-    if (AudioExtra_HasMetaAudio()) {
-        LayoutNamed(page, "al_occlusion", rightX, rightY, colW, rowH);
-        rightY += rowH + 6;
-        LayoutNamed(page, "al_occlusion_fade", rightX, rightY, colW, rowH);
-        rightY += rowH + 6;
-        LayoutNamed(page, "al_resample_all", rightX, rightY, colW, rowH);
-        rightY += rowH + 6;
-        LayoutNamed(page, "al_xfi_workaround", rightX, rightY, colW, rowH);
-        rightY += rowH + 6;
-        LayoutNamed(page, "al_clamping_mode", rightX, rightY, colW, rowH);
+    AUDIO_RIGHT_ROW("hisound");
+    if (hasMetaAudio) {
+        AUDIO_RIGHT_ROW("al_occlusion");
+        AUDIO_RIGHT_ROW("al_occlusion_fade");
+        AUDIO_RIGHT_ROW("al_resample_all");
+        AUDIO_RIGHT_ROW("al_xfi_workaround");
+        AUDIO_RIGHT_ROW("al_clamping_mode");
     } else {
-        LayoutNamed(page, "al_occlusion", -4000, -4000, 1, 1);
-        LayoutNamed(page, "al_occlusion_fade", -4000, -4000, 1, 1);
-        LayoutNamed(page, "al_resample_all", -4000, -4000, 1, 1);
-        LayoutNamed(page, "al_xfi_workaround", -4000, -4000, 1, 1);
-        LayoutNamed(page, "al_clamping_mode", -4000, -4000, 1, 1);
+        Ui_Hide(page, "al_occlusion");
+        Ui_Hide(page, "al_occlusion_fade");
+        Ui_Hide(page, "al_resample_all");
+        Ui_Hide(page, "al_xfi_workaround");
+        Ui_Hide(page, "al_clamping_mode");
     }
 
-    LayoutNamed(page, "OpenAL Label", -4000, -4000, 1, 1);
-
-    LayoutNamed(page, "MilesAudioLabel", -4000, -4000, 1, 1);
-    LayoutNamed(page, "Sound Quality", -4000, -4000, 1, 1);
-    LayoutNamed(page, "Label1", -4000, -4000, 1, 1);
-    LayoutNamed(page, "suit label", -4000, -4000, 1, 1);
-    if (!AudioExtra_HasMetaAudio()) {
-        LayoutNamed(page, "Suit Slider", -4000, -4000, 1, 1);
+    UiTable_Apply(page, &leftGrid, leftRect.y, leftRows, leftCount);
+    UiTable_Apply(page, &rightGrid, rightRect.y, rightRows, rightCount);
+    StyleCaption(Ui_Find(page, "sfx label"));
+    StyleCaption(Ui_Find(page, "mp3 label"));
+    if (hasMetaAudio) {
+        StyleCaption(Ui_Find(page, "al_doppler_label"));
     }
+
+    {
+        static const char *kHide[] = {
+            "OpenAL Label", "MilesAudioLabel", "Sound Quality",
+            "Label1", "suit label"
+        };
+        for (i = 0; i < (int)(sizeof(kHide) / sizeof(kHide[0])); i++) {
+            Ui_Hide(page, kHide[i]);
+        }
+    }
+
+#undef AUDIO_LEFT_ROW
+#undef AUDIO_RIGHT_ROW
 
     AudioExtra_BindPage(page);
-}
-
-static void FitVoiceSliderRow(void *page, const char *caption, void *slider,
-    int pad, int y, int labelW, int rightX, int trackW, int labelH, int sliderH)
-{
-    int capY = y + (sliderH - labelH) / 2;
-    if (capY < y) {
-        capY = y;
-    }
-    LayoutCaption(page, caption, pad, capY, labelW, labelH);
-    if (slider != NULL) {
-        g_SetPos(slider, rightX, y);
-        g_SetSize(slider, trackW, sliderH);
-    }
 }
 
 static void FitMultiplayerPage(void *page, int pageW, int pageH)
@@ -611,12 +642,15 @@ static void FitMultiplayerPage(void *page, int pageW, int pageH)
     const int rowH = OPTIONS_TOGGLE_ROW_H;
     const int preview = 32;
     const int gap = 8;
-    int innerW;
-    int labelW;
-    int ctrlX;
-    int ctrlW;
-    int comboW;
-    int y;
+    const UiGridColumn columns[] = {
+        { 2800, 100, 180 },
+        {    0, preview, preview },
+        { 3600, 72, 0 },
+        { 3600, 72, 0 }
+    };
+    UiGrid grid;
+    UiTableCell cells[4][4];
+    UiTableRow rows[4];
     static const char *kHide[] = {
         "ModelImage", "URLLabel1", "Advanced", "High Quality Models",
         "Player model", "Primary Color Slider", "Secondary Color Slider",
@@ -625,57 +659,41 @@ static void FitMultiplayerPage(void *page, int pageW, int pageH)
     };
     int i;
 
-    (void)pageH;
     if (page == NULL || LayoutFindChild(page, "NameEntry") == NULL) {
         return;
     }
-    innerW = pageW - pad * 2;
-    labelW = 180;
-    if (labelW > innerW / 2) {
-        labelW = innerW / 2;
-    }
-    if (labelW < 100) {
-        labelW = 100;
-    }
-    ctrlX = pad + labelW + 10;
-    ctrlW = pageW - pad - ctrlX;
-    if (ctrlW < 160) {
-        ctrlX = pageW - pad - 160;
-        if (ctrlX < pad + 90) {
-            ctrlX = pad + 90;
-        }
-        labelW = ctrlX - pad - 10;
-        ctrlW = pageW - pad - ctrlX;
-    }
-    comboW = (ctrlW - preview - gap * 2) / 2;
-    if (comboW < 72) {
-        comboW = 72;
-    }
+    UiGrid_Init(&grid, pad, pad, pageW - pad * 2, pageH - pad * 2,
+                gap, columns, 4);
 
-    y = pad;
-    LayoutNamed(page, "NameLabel", pad, y + 2, labelW, 24);
-    /* Same left edge as LogoImage / CrosshairImage — not stock xpos 300. */
-    LayoutNamed(page, "NameEntry", ctrlX, y, ctrlW, 28);
-    y += 36;
+    cells[0][0] = { "NameLabel", NULL, 0, 1, 24, UI_ALIGN_CENTER };
+    cells[0][1] = { "NameEntry", NULL, 1, 3, 28, UI_ALIGN_START };
+    rows[0] = { cells[0], 2, 28, 8 };
 
-    LayoutNamed(page, "Label2", pad, y + 4, labelW, 24);
-    LayoutNamed(page, "LogoImage", ctrlX, y, preview, preview);
-    LayoutNamed(page, "SpraypaintList", ctrlX + preview + gap, y + 4, comboW, 24);
-    LayoutNamed(page, "SpraypaintColor", ctrlX + preview + gap * 2 + comboW, y + 4, comboW, 24);
-    y += preview + 8;
+    cells[1][0] = { "Label2", NULL, 0, 1, 24, UI_ALIGN_CENTER };
+    cells[1][1] = { "LogoImage", NULL, 1, 1, preview, UI_ALIGN_START };
+    cells[1][2] = { "SpraypaintList", NULL, 2, 1, 24, UI_ALIGN_CENTER };
+    cells[1][3] = { "SpraypaintColor", NULL, 3, 1, 24, UI_ALIGN_CENTER };
+    rows[1] = { cells[1], 4, preview, 8 };
 
-    LayoutNamed(page, "CrosshairLabel", pad, y + 4, labelW, 24);
-    LayoutNamed(page, "CrosshairImage", ctrlX, y, preview, preview);
-    LayoutNamed(page, "CrosshairSizeComboBox", ctrlX + preview + gap, y + 4, comboW, 24);
-    LayoutNamed(page, "CrosshairColorComboBox",
-                ctrlX + preview + gap * 2 + comboW, y + 4, comboW, 24);
-    y += preview + 8;
+    cells[2][0] = { "CrosshairLabel", NULL, 0, 1, 24, UI_ALIGN_CENTER };
+    cells[2][1] = { "CrosshairImage", NULL, 1, 1, preview, UI_ALIGN_START };
+    cells[2][2] = { "CrosshairSizeComboBox", NULL, 2, 1, 24, UI_ALIGN_CENTER };
+    cells[2][3] = { "CrosshairColorComboBox", NULL, 3, 1, 24, UI_ALIGN_CENTER };
+    rows[2] = { cells[2], 4, preview, 8 };
 
-    LayoutNamed(page, "TranslucentLabel", pad, y, labelW, rowH);
-    LayoutNamed(page, "CrosshairTranslucencyCheckbox", pad, y, innerW, rowH);
+    cells[3][0] = { "TranslucentLabel", NULL, 0, 1, rowH, UI_ALIGN_START };
+    cells[3][1] = { "CrosshairTranslucencyCheckbox", NULL, 0, 4,
+                    rowH, UI_ALIGN_START };
+    rows[3] = { cells[3], 2, rowH, 0 };
+
+    UiTable_Apply(page, &grid, pad, rows, 4);
+    StyleCaption(Ui_Find(page, "NameLabel"));
+    StyleCaption(Ui_Find(page, "Label2"));
+    StyleCaption(Ui_Find(page, "CrosshairLabel"));
+    StyleCaption(Ui_Find(page, "TranslucentLabel"));
 
     for (i = 0; i < (int)(sizeof(kHide) / sizeof(kHide[0])); i++) {
-        LayoutNamed(page, kHide[i], -4000, -4000, 1, 1);
+        Ui_Hide(page, kHide[i]);
     }
 }
 
@@ -685,12 +703,22 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     const int rowH = OPTIONS_TOGGLE_ROW_H;
     const int labelH = 20;
     const int sliderH = 28;
+    const UiGridColumn columns[] = {
+        { 4500, 80, 0 },
+        { 5500, 160, 240 }
+    };
+    UiGrid grid;
+    UiTableCell cells[6][2];
+    UiTableRow rows[6];
     int innerW;
-    int trackW;
-    int rightX;
-    int labelW;
     int y;
+    int rowCount = 0;
+    int i;
     void *tx;
+    void *rx;
+    void *gate;
+    void *monitor;
+
     if (page == NULL || LayoutFindChild(page, "voice_modenable") == NULL) {
         return;
     }
@@ -698,59 +726,73 @@ static void FitVoicePage(void *page, int pageW, int pageH)
         pageH = 280;
     }
     innerW = pageW - pad * 2;
-    trackW = innerW / 2;
-    if (trackW < 160) {
-        trackW = 160;
-    }
-    if (trackW > 240) {
-        trackW = 240;
-    }
-    if (trackW > innerW - 120) {
-        trackW = innerW - 120;
-    }
-    rightX = pad + innerW - trackW;
-    labelW = rightX - pad - 10;
-    if (labelW < 80) {
-        labelW = 80;
-    }
+    UiGrid_Init(&grid, pad, pad, innerW, pageH - pad * 2, 10,
+                columns, 2);
     AudioExtra_BindVoicePage(page);
-
-    y = pad;
-    LayoutNamed(page, "voice_modenable", pad, y, innerW, rowH);
-    y += rowH + 4;
-    LayoutNamed(page, "MicBoost", pad, y, innerW, rowH);
-    y += rowH + 6;
 
     tx = LayoutFindChild(page, "#GameUI_MicrophoneVolume");
     if (tx == NULL) {
         tx = LayoutFindChild(page, "Microphone Volume");
     }
-    FitVoiceSliderRow(page, "Transmit label", tx, pad, y, labelW, rightX, trackW,
-                      labelH, sliderH);
-    y += sliderH + 4;
-    FitVoiceSliderRow(page, "Label1", LayoutFindChild(page, "VoiceReceive"),
-                      pad, y, labelW, rightX, trackW, labelH, sliderH);
-    y += sliderH + 4;
-    FitVoiceSliderRow(page, "NoiseGateLabel", LayoutFindChild(page, "NoiseGate"),
-                      pad, y, labelW, rightX, trackW, labelH, sliderH);
-    y += sliderH + 4;
-    /* Identical row to NoiseGate. SidTone often missing from .res load — use
-     * the code-created panel pointer BindVoicePage cached. */
-    {
-        void *mon = LayoutFindChild(page, "SidTone");
-        if (mon == NULL) {
-            mon = AudioExtra_VoiceMonitorPanel();
-        }
-        FitVoiceSliderRow(page, "SidToneLabel", mon, pad, y, labelW, rightX,
-                          trackW, labelH, sliderH);
-        y += sliderH + 8;
+    rx = LayoutFindChild(page, "VoiceReceive");
+    gate = LayoutFindChild(page, "NoiseGate");
+    monitor = Ui_Find(page, "SidTone");
+    if (monitor == NULL) {
+        monitor = AudioExtra_VoiceMonitorPanel();
     }
-    LayoutNamed(page, "MvMonitor", -4000, -4000, 1, 1);
-    LayoutNamed(page, "MvMonitorLabel", -4000, -4000, 1, 1);
-    LayoutNamed(page, "VoiceMonitor", -4000, -4000, 1, 1);
-    LayoutNamed(page, "VoiceMonitorLabel", -4000, -4000, 1, 1);
-    LayoutNamed(page, "Monitor", -4000, -4000, 1, 1);
-    LayoutNamed(page, "MonitorLabel", -4000, -4000, 1, 1);
+
+#define VOICE_FULL_ROW(controlName, after)                                  \
+    do {                                                                     \
+        cells[rowCount][0] = { controlName, NULL, 0, 2, rowH,                \
+                               UI_ALIGN_START };                              \
+        rows[rowCount] = { cells[rowCount], 1, rowH, after };                \
+        rowCount++;                                                          \
+    } while (0)
+
+#define VOICE_SLIDER_ROW(labelName, sliderPanel, after)                     \
+    do {                                                                     \
+        cells[rowCount][0] = { labelName, NULL, 0, 1, labelH,                \
+                               UI_ALIGN_CENTER };                             \
+        cells[rowCount][1] = { NULL, sliderPanel, 1, 1, sliderH,             \
+                               UI_ALIGN_START };                              \
+        rows[rowCount] = { cells[rowCount], 2, sliderH, after };             \
+        rowCount++;                                                          \
+    } while (0)
+
+    VOICE_FULL_ROW("voice_modenable", 4);
+    VOICE_FULL_ROW("MicBoost", 6);
+    VOICE_SLIDER_ROW("Transmit label", tx, 4);
+    VOICE_SLIDER_ROW("Label1", rx, 4);
+    if (UiCaps_Get()->metaVoice) {
+        VOICE_SLIDER_ROW("NoiseGateLabel", gate, 4);
+        VOICE_SLIDER_ROW("SidToneLabel", monitor, 8);
+    } else {
+        Ui_Hide(page, "NoiseGate");
+        Ui_Hide(page, "NoiseGateLabel");
+        Ui_Hide(page, "SidTone");
+        Ui_Hide(page, "SidToneLabel");
+    }
+
+    y = UiTable_Apply(page, &grid, pad, rows, rowCount);
+    StyleCaption(Ui_Find(page, "Transmit label"));
+    StyleCaption(Ui_Find(page, "Label1"));
+    if (UiCaps_Get()->metaVoice) {
+        StyleCaption(Ui_Find(page, "NoiseGateLabel"));
+        StyleCaption(Ui_Find(page, "SidToneLabel"));
+    }
+
+    {
+        static const char *kOldMonitorNames[] = {
+            "MvMonitor", "MvMonitorLabel", "VoiceMonitor",
+            "VoiceMonitorLabel", "Monitor", "MonitorLabel"
+        };
+        for (i = 0; i < (int)(sizeof(kOldMonitorNames) / sizeof(kOldMonitorNames[0])); i++) {
+            Ui_Hide(page, kOldMonitorNames[i]);
+        }
+    }
+
+#undef VOICE_FULL_ROW
+#undef VOICE_SLIDER_ROW
 
     {
         int testY = pageH - pad - rowH;
@@ -797,13 +839,27 @@ static void FitVideoPage(void *page, int pageW, int pageH)
     const int comboH = 24;
     const int labelH = 20;
     const int gap = 5;
-    int leftW;
-    int rightW;
-    int rightX;
-    int y;
-    int rightY;
+    const UiGridColumn columns[] = {
+        { 6000, 156, 0 },
+        { 4000, 156, 236 }
+    };
+    const UiGridColumn oneColumn[] = {
+        { 10000, 0, 0 }
+    };
+    UiGrid pageGrid;
+    UiGrid leftGrid;
+    UiGrid rightGrid;
+    UiTableCell leftCells[6];
+    UiTableRow leftRows[6];
+    UiTableCell rightCells[6];
+    UiTableRow rightRows[6];
+    UiRect leftRect;
+    UiRect rightRect;
+    int leftEnd;
+    int rightEnd;
     int slidersY;
-    int avail;
+    int i;
+
     if (page == NULL || pageW < 80 || pageH < 80) {
         return;
     }
@@ -811,61 +867,61 @@ static void FitVideoPage(void *page, int pageW, int pageH)
         && LayoutFindChild(page, "Renderer") == NULL) {
         return;
     }
-    avail = pageW - pad * 3;
-    /* Right is only as wide as the longest label + switch + 12px gap.
-     * Leftover goes to the combos so the middle of the sheet is not empty. */
-    rightW = 236;
-    if (rightW > avail - 156) {
-        rightW = avail - 156;
-    }
-    if (rightW < 200) {
-        rightW = avail / 2;
-    }
-    leftW = avail - rightW;
-    if (leftW < 156) {
-        leftW = 156;
-        rightW = avail - leftW;
-    }
-    rightX = pad + leftW + pad;
-    y = pad;
-    LayoutNamed(page, "Label2", pad, y, leftW, labelH);
-    LayoutNamed(page, "Renderer", pad, y + labelH, leftW, comboH);
-    y += labelH + comboH + gap;
-    LayoutNamed(page, "Label1", pad, y, leftW, labelH);
-    LayoutNamed(page, "Resolution", pad, y + labelH, leftW, comboH);
-    y += labelH + comboH + gap;
-    LayoutNamed(page, "Label4", pad, y, leftW, labelH);
-    LayoutNamed(page, "AspectRatio", pad, y + labelH, leftW, comboH);
+    UiGrid_Init(&pageGrid, pad, pad, pageW - pad * 2, pageH - pad * 2,
+                pad, columns, 2);
+    leftRect = UiGrid_Cell(&pageGrid, 0, 1);
+    rightRect = UiGrid_Cell(&pageGrid, 1, 1);
+    UiGrid_Init(&leftGrid, leftRect.x, leftRect.y, leftRect.w, leftRect.h,
+                0, oneColumn, 1);
+    UiGrid_Init(&rightGrid, rightRect.x, rightRect.y, rightRect.w, rightRect.h,
+                0, oneColumn, 1);
 
-    rightY = pad;
-    LayoutNamed(page, "Windowed", rightX, rightY, rightW, rowH);
-    rightY += rowH + gap;
-    LayoutNamed(page, "VSync", rightX, rightY, rightW, rowH);
-    rightY += rowH + gap;
-    LayoutNamed(page, "HDModels", rightX, rightY, rightW, rowH);
-    rightY += rowH + gap;
-    LayoutNamed(page, "AddonsFolder", rightX, rightY, rightW, rowH);
-    rightY += rowH + gap;
-    LayoutNamed(page, "LowVideoDetail", rightX, rightY, rightW, rowH);
-    rightY += rowH + gap;
-    LayoutNamed(page, "DetailTextures", rightX, rightY, rightW, rowH);
-    rightY += rowH + gap;
-
-    slidersY = y + labelH + comboH + 16;
-    if (rightY + 8 > slidersY) {
-        slidersY = rightY + 8;
+    {
+        static const char *kLeft[] = {
+            "Label2", "Renderer", "Label1",
+            "Resolution", "Label4", "AspectRatio"
+        };
+        for (i = 0; i < 6; i++) {
+            int isLabel = (i % 2) == 0;
+            int h = isLabel ? labelH : comboH;
+            int after = isLabel ? 0 : (i == 5 ? 0 : gap);
+            leftCells[i] = { kLeft[i], NULL, 0, 1, h, UI_ALIGN_START };
+            leftRows[i] = { &leftCells[i], 1, h, after };
+        }
     }
     {
-        int sliderW = leftW;
-        if (sliderW > rightW) {
-            sliderW = rightW;
+        static const char *kRight[] = {
+            "Windowed", "VSync", "HDModels", "AddonsFolder",
+            "LowVideoDetail", "DetailTextures"
+        };
+        for (i = 0; i < 6; i++) {
+            rightCells[i] = { kRight[i], NULL, 0, 1, rowH, UI_ALIGN_START };
+            rightRows[i] = { &rightCells[i], 1, rowH, gap };
         }
-        LayoutNamed(page, "brightness label", pad, slidersY, sliderW, 24);
-        LayoutNamed(page, "Gamma label", rightX, slidersY, sliderW, 24);
-        LayoutNamed(page, "Brightness", pad, slidersY + 22, sliderW, 50);
-        LayoutNamed(page, "Gamma", rightX, slidersY + 22, sliderW, 50);
     }
-    LayoutNamed(page, "Label5", pad, slidersY + 74, pageW - pad * 2, 40);
+    leftEnd = UiTable_Apply(page, &leftGrid, pad, leftRows, 6);
+    rightEnd = UiTable_Apply(page, &rightGrid, pad, rightRows, 6);
+    slidersY = leftEnd + 16;
+    if (rightEnd + 8 > slidersY) {
+        slidersY = rightEnd + 8;
+    }
+
+    UiGrid_Place(&pageGrid, Ui_Find(page, "brightness label"), 0, 1,
+                 slidersY, 24, 24, UI_ALIGN_START);
+    UiGrid_Place(&pageGrid, Ui_Find(page, "Gamma label"), 1, 1,
+                 slidersY, 24, 24, UI_ALIGN_START);
+    UiGrid_Place(&pageGrid, Ui_Find(page, "Brightness"), 0, 1,
+                 slidersY + 22, 50, 50, UI_ALIGN_START);
+    UiGrid_Place(&pageGrid, Ui_Find(page, "Gamma"), 1, 1,
+                 slidersY + 22, 50, 50, UI_ALIGN_START);
+    UiGrid_Place(&pageGrid, Ui_Find(page, "Label5"), 0, 2,
+                 slidersY + 74, 40, 40, UI_ALIGN_START);
+
+    StyleCaption(Ui_Find(page, "Label2"));
+    StyleCaption(Ui_Find(page, "Label1"));
+    StyleCaption(Ui_Find(page, "Label4"));
+    StyleCaption(Ui_Find(page, "brightness label"));
+    StyleCaption(Ui_Find(page, "Gamma label"));
 }
 
 static void __fastcall VideoPageLayout_Hook(void *thisPtr)
@@ -902,6 +958,66 @@ static void InstallVideoPageLayoutHook(BYTE *base)
             (void *)g_origVideoPageLayout, (void *)VideoPageLayout_Hook);
 }
 
+static void FitMousePage(void *page, int pageW, int pageH)
+{
+    const int pad = OPTIONS_INNER_PAD;
+    const int rowH = OPTIONS_TOGGLE_ROW_H;
+    const int rowGap = 5;
+    const int toggleReserve = OPTIONS_TOGGLE_TRACK_W + 12;
+    const UiGridColumn columns[] = {
+        { 0, 150, 150 },
+        { 10000, 40, 0 }
+    };
+    static const char *kChecks[] = {
+        "ReverseMouse", "MouseLook", "MouseFilter", "Joystick",
+        "JoystickLook", "Auto-Aim", "RawInput"
+    };
+    static const char *kDescs[] = {
+        "Reverse Mouse label", "Label1", "Mouse filter", "Joystick label",
+        "Label2", "AutoaimLabel", "RawInputLabel"
+    };
+    UiGrid grid;
+    UiTableCell cells[7][2];
+    UiTableRow rows[7];
+    void *slider;
+    void *sensitivity;
+    int sliderH = 50;
+    int y;
+    int row;
+
+    if (page == NULL || Ui_Find(page, "ReverseMouse") == NULL) {
+        return;
+    }
+    UiGrid_Init(&grid, pad, pad + 4, pageW - pad * 2, pageH - pad * 2,
+                8, columns, 2);
+    for (row = 0; row < 7; row++) {
+        cells[row][0] = { kChecks[row], NULL, 0, 2, rowH, UI_ALIGN_START };
+        cells[row][1] = { kDescs[row], NULL, 1, 1, 24, UI_ALIGN_START,
+                          0, toggleReserve, 2 };
+        rows[row] = { cells[row], 2, rowH, rowGap };
+    }
+    y = UiTable_Apply(page, &grid, pad + 4, rows, 7) + 8;
+
+    slider = Ui_Find(page, "Slider");
+    if (slider != NULL) {
+        int oldW = 0;
+        VguiBridge_GetSize(slider, &oldW, &sliderH);
+        if (sliderH < 50) {
+            sliderH = 50;
+        }
+    }
+    UiGrid_Place(&grid, Ui_Find(page, "Label3"), 0, 2,
+                 y, 24, 24, UI_ALIGN_START);
+    UiGrid_Place(&grid, slider, 0, 2,
+                 y + 24, sliderH, sliderH, UI_ALIGN_START);
+
+    sensitivity = Ui_Find(page, "SensitivityLabel");
+    if (sensitivity != NULL) {
+        VguiBridge_Park(sensitivity);
+        RoundFrame_SetDragValueLabel(sensitivity, -1000, -1000);
+    }
+}
+
 static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
 {
     const int pad = OPTIONS_INNER_PAD;
@@ -926,6 +1042,10 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
          * range still reaches Radar type. */
         g_SetPos(advList, 0, 0);
         g_SetSize(advList, pageW, pageH);
+        /* Stock list PerformLayout already ran for the pre-resize bounds.
+         * Without a second pass the rows stay at 0-tall / old coords and
+         * Advanced looks empty (scrollbar chrome only). */
+        PanelListLayout_Hook(advList);
     }
     keyList = LayoutFindChild(page, "listpanel_keybindlist");
     if (keyList == NULL) {
@@ -944,63 +1064,7 @@ static void FitOptionsPageLikeAdvanced(void *page, int pageW, int pageH)
         g_SetSize(keyList, pageW - pad * 2, listH);
         PlaceKeyboardFooterButtons(page, pageW, pageH);
     }
-    if (LayoutFindChild(page, "ReverseMouse") != NULL) {
-        static const char *kChecks[] = {
-            "ReverseMouse", "MouseLook", "MouseFilter", "Joystick",
-            "JoystickLook", "Auto-Aim", "RawInput"
-        };
-        static const char *kDescs[] = {
-            "Reverse Mouse label", "Label1", "Mouse filter", "Joystick label",
-            "Label2", "AutoaimLabel", "RawInputLabel"
-        };
-        const int toggleW = OPTIONS_TOGGLE_TRACK_W + 4;
-        const int titleW = 150;
-        const int descX = pad + titleW + 8;
-        const int rowH = OPTIONS_TOGGLE_ROW_H;
-        const int rowStep = OPTIONS_TOGGLE_ROW_H + 5;
-        int row;
-        int descW = pageW - pad - toggleW - 8 - descX;
-        int y0 = pad + 4;
-        void *slider;
-        void *sens;
-        void *sensTitle;
-        if (descW < 40) {
-            descW = 40;
-        }
-        for (row = 0; row < 7; row++) {
-            void *check = LayoutFindChild(page, kChecks[row]);
-            void *desc = LayoutFindChild(page, kDescs[row]);
-            int y = y0 + row * rowStep;
-            if (check != NULL) {
-                g_SetPos(check, pad, y);
-                g_SetSize(check, pageW - pad * 2, rowH);
-            }
-            if (desc != NULL) {
-                g_SetPos(desc, descX, y + 2);
-                g_SetSize(desc, descW, 24);
-            }
-        }
-        slider = LayoutFindChild(page, "Slider");
-        if (slider != NULL) {
-            int h = 0, w = 0;
-            int y = y0 + 7 * rowStep + 8;
-            g_GetSize(slider, &w, &h);
-            if (h < 50) {
-                h = 50;
-            }
-            g_SetPos(slider, pad, y + 24);
-            g_SetSize(slider, pageW - pad * 2, h);
-        }
-        sens = LayoutFindChild(page, "SensitivityLabel");
-        if (sens != NULL) {
-            g_SetPos(sens, -1000, -1000);
-            RoundFrame_SetDragValueLabel(sens, -1000, -1000);
-        }
-        sensTitle = LayoutFindChild(page, "Label3");
-        if (sensTitle != NULL) {
-            g_SetPos(sensTitle, pad, y0 + 7 * rowStep + 8);
-        }
-    }
+    FitMousePage(page, pageW, pageH);
     if (LayoutFindChild(page, "voice_modenable") != NULL) {
         FitVoicePage(page, pageW, pageH);
     }
@@ -1103,6 +1167,8 @@ void LayoutHook_Init(HMODULE hOriginalGameUI)
     InstallPanelListPaddingHook(base);
     InstallVideoPageLayoutHook(base);
     PatchOptionsDialogSize(base);
+    UiApi_Init(hOriginalGameUI);
+    UiTheme_Reload();
     RoundFrame_Init(hOriginalGameUI);
     Prefetch_Bind(hOriginalGameUI);
     AudioExtra_Init(hOriginalGameUI);
@@ -1116,6 +1182,7 @@ void LayoutHook_Tick(void)
         && last != 0 && now - last > 400) {
         InterlockedExchange(&g_hideGameMenuForConnect, 0);
     }
+    UiCaps_Refresh();
     AudioExtra_Tick();
 }
 
@@ -1948,6 +2015,7 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
     void **slots;
     const int pad = OPTIONS_INNER_PAD;
     const int scrollW = 24;
+    const int rowMinH = 28;
 
     if (g_origPanelListLayout != NULL) {
         g_origPanelListLayout(thisPtr);
@@ -1970,12 +2038,16 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
             if (slot == NULL || IsBadReadPtr(slot, sizeof(void *))) {
                 continue;
             }
+            /* This GameUI DATAITEM holds a single Panel* (the row). */
             child = *(void **)slot;
             if (child == NULL || IsBadReadPtr(child, sizeof(void *))) {
                 continue;
             }
             g_GetPos(child, &x, &y);
             g_GetSize(child, &w, &h);
+            if (h < rowMinH) {
+                h = rowMinH;
+            }
             innerW = listW - pad * 2 - scrollW;
             if (innerW < 36) {
                 innerW = 36;
@@ -1999,6 +2071,9 @@ static void __fastcall PanelListLayout_Hook(void *thisPtr)
                         }
                         g_GetPos(sub, &sx, &sy);
                         g_GetSize(sub, &sw, &sh);
+                        if (sh < rowMinH) {
+                            sh = rowMinH;
+                        }
                         g_SetPos(sub, 0, sy);
                         g_SetSize(sub, innerW, sh);
                     }

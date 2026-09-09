@@ -3446,8 +3446,14 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
     }
     {
         const char *nm = PanelName(thisPtr);
-        int isL = lstrcmpiA(nm, "MicMeterL") == 0;
-        int isR = lstrcmpiA(nm, "MicMeterR") == 0;
+        int isL;
+        int isR;
+        /* Keep the crosshair bars; drop the stock TGA plate behind them. */
+        if (lstrcmpiA(nm, "CrosshairImage") == 0) {
+            return;
+        }
+        isL = lstrcmpiA(nm, "MicMeterL") == 0;
+        isR = lstrcmpiA(nm, "MicMeterR") == 0;
         if (!isL && !isR && lstrcmpiA(nm, "MicMeter") != 0) {
             if (g_origImagePanelPaintBg != NULL) {
                 g_origImagePanelPaintBg(thisPtr);

@@ -840,8 +840,8 @@ static void FitVideoPage(void *page, int pageW, int pageH)
     const int labelH = 20;
     const int gap = 5;
     const UiGridColumn columns[] = {
-        { 6000, 156, 0 },
-        { 4000, 156, 236 }
+        { 5000, 156, 0 },
+        { 5000, 156, 0 }
     };
     const UiGridColumn oneColumn[] = {
         { 10000, 0, 0 }
@@ -881,11 +881,17 @@ static void FitVideoPage(void *page, int pageW, int pageH)
             "Label2", "Renderer", "Label1",
             "Resolution", "Label4", "AspectRatio"
         };
+        const int comboMaxW = 180;
+        int comboInset = 0;
+        if (leftRect.w > comboMaxW) {
+            comboInset = leftRect.w - comboMaxW;
+        }
         for (i = 0; i < 6; i++) {
             int isLabel = (i % 2) == 0;
             int h = isLabel ? labelH : comboH;
             int after = isLabel ? 0 : (i == 5 ? 0 : gap);
-            leftCells[i] = { kLeft[i], NULL, 0, 1, h, UI_ALIGN_START };
+            leftCells[i] = { kLeft[i], NULL, 0, 1, h, UI_ALIGN_START,
+                             0, isLabel ? 0 : comboInset };
             leftRows[i] = { &leftCells[i], 1, h, after };
         }
     }
@@ -906,14 +912,16 @@ static void FitVideoPage(void *page, int pageW, int pageH)
         slidersY = rightEnd + 8;
     }
 
-    UiGrid_Place(&pageGrid, Ui_Find(page, "brightness label"), 0, 1,
-                 slidersY, 24, 24, UI_ALIGN_START);
-    UiGrid_Place(&pageGrid, Ui_Find(page, "Gamma label"), 1, 1,
-                 slidersY, 24, 24, UI_ALIGN_START);
-    UiGrid_Place(&pageGrid, Ui_Find(page, "Brightness"), 0, 1,
-                 slidersY + 22, 50, 50, UI_ALIGN_START);
-    UiGrid_Place(&pageGrid, Ui_Find(page, "Gamma"), 1, 1,
-                 slidersY + 22, 50, 50, UI_ALIGN_START);
+    {
+        int sliderW = leftRect.w;
+        if (rightRect.w < sliderW) {
+            sliderW = rightRect.w;
+        }
+        Ui_Place(Ui_Find(page, "brightness label"), leftRect.x, slidersY, sliderW, 24);
+        Ui_Place(Ui_Find(page, "Gamma label"), rightRect.x, slidersY, sliderW, 24);
+        Ui_Place(Ui_Find(page, "Brightness"), leftRect.x, slidersY + 22, sliderW, 50);
+        Ui_Place(Ui_Find(page, "Gamma"), rightRect.x, slidersY + 22, sliderW, 50);
+    }
     UiGrid_Place(&pageGrid, Ui_Find(page, "Label5"), 0, 2,
                  slidersY + 74, 40, 40, UI_ALIGN_START);
 

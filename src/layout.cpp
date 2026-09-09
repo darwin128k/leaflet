@@ -195,6 +195,7 @@ static void ForceSchemeLogoSize(const char *path, int wide, int tall);
  * FUN_1006afb0 body */
 #define OFF_ITEM_COUNT     0x2f /* param_1[0x2f]: number of menu items */
 #define OFF_ITEM_HEIGHT    0x1e /* param_1[0x1e]: per-item row height   */
+#define OFF_FIXED_WIDTH    0x1f /* Menu::m_iFixedWidth at +0x7C; ComboBox SetFixedWidth(GetWide()) */
 #define OFF_ITEM_PTR_BASE  0x23 /* param_1[0x23]: base of item slot table (12 bytes/slot) */
 #define OFF_ITEM_INDEX_MAP 0x2c /* param_1[0x2c]: loop-index -> slot-index remap array */
 
@@ -2242,7 +2243,19 @@ static void LayoutHook_Inner(void *thisPtr)
         }
 
         const int genericMarginX = 2;
-        int genericItemWide = (maxContentWide > 0) ? (maxContentWide + 8) : 0;
+        int genericItemWide;
+        int fixedW = self[OFF_FIXED_WIDTH];
+        /* ComboBox sets m_iFixedWidth to its own GetWide() before layout.
+         * Without that cap the list grows to the longest item / leftover
+         * MenuItem size and hangs past the rounded field. */
+        if (fixedW >= 32) {
+            genericItemWide = fixedW - genericMarginX * 2;
+            if (genericItemWide < 16) {
+                genericItemWide = 16;
+            }
+        } else {
+            genericItemWide = (maxContentWide > 0) ? (maxContentWide + 8) : 0;
+        }
 
         if (genericItemWide <= 0 && g_GetSize != NULL) {
             /* Measurement failed for some reason -- fall back to whatever

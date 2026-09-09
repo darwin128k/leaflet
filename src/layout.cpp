@@ -733,6 +733,9 @@ static void FitVoicePage(void *page, int pageW, int pageH)
     y += sliderH + 4;
     FitVoiceSliderRow(page, "NoiseGateLabel", LayoutFindChild(page, "NoiseGate"),
                       pad, y, labelW, rightX, trackW, labelH, sliderH);
+    y += sliderH + 4;
+    FitVoiceSliderRow(page, "VoiceMonitorLabel", LayoutFindChild(page, "VoiceMonitor"),
+                      pad, y, labelW, rightX, trackW, labelH, sliderH);
     y += sliderH + 8;
 
     {

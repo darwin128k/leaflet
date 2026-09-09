@@ -99,6 +99,12 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define OFF_CCVAR_CURF            0xC4
 #define OFF_CCVAR_NAME            0xC8
 #define RVA_CROSSHAIRIMAGE_PAINT  0x0003b010u /* CrosshairImagePanel::Paint — engine FillRGBA, no VGUI clip */
+#define RVA_TEXTENTRY_PAINTBG     0x0005b2a0u /* TextEntry::PaintBackground — fill + glyphs; ComboBox shares this */
+#define RVA_COMBOBOX_VTABLE       0x0009fbbcu /* vgui2::ComboBox */
+#define RVA_COMBOBOXBUTTON_VTABLE 0x0009f894u /* ComboBoxButton — Marlett arrow child */
+#define RVA_CLABELEDCOMBO_VTABLE  0x000985fcu /* CLabeledCommandComboBox : ComboBox */
+#define RVA_CCVARTEXTENTRY_VTABLE 0x00097c94u /* CCvarTextEntry — NameEntry */
+#define RVA_TEXTENTRY_VTABLE      0x0009ff34u /* vgui2::TextEntry */
 #define OFF_PROGRESS              0x78 /* float 0..1; confirmed via fmul [esi+0x78] in PaintBackground */
 
 #define OFF_FRAME_TITLEIMAGE      0xBC /* TextImage* _title, painted in Frame::PaintBackground */
@@ -146,6 +152,7 @@ static PaintFn g_origSliderPaint = NULL;
 static PaintFn g_origSliderPaintBg = NULL;
 static PaintFn g_origCvarSliderApply = NULL;
 static PaintFn g_origCrosshairPaint = NULL;
+static PaintFn g_origTextEntryPaintBg = NULL;
 static BYTE g_panelPaintBgTramp[32];
 static BYTE g_buttonPaintTramp[32];
 static BYTE g_framePaintBgTramp[32];
@@ -159,6 +166,7 @@ static BYTE g_sliderPaintTramp[32];
 static BYTE g_sliderPaintBgTramp[32];
 static BYTE g_cvarSliderApplyTramp[32];
 static BYTE g_crosshairPaintTramp[32];
+static BYTE g_textEntryPaintBgTramp[32];
 static BYTE g_titlePlaceTramp[32];
 
 static SurfDrawSetColorFn g_origDrawSetColor = NULL;
@@ -179,6 +187,7 @@ static int g_roundH = 0;
 static int g_roundR = 0;
 static int g_roundIsButton = 0;
 static int g_roundHot = 0;
+static int g_fieldSkipFill = 0;
 static unsigned int g_curColor = 0xE0101410u;
 static OverlayTheme g_theme;
 static void *g_dragValueLabel = NULL;
@@ -489,6 +498,45 @@ static int IsVguiButton(void *thisPtr)
     vt = *(void **)thisPtr;
     return vt == (void *)(g_gameUiBase + RVA_BUTTON_VTABLE)
         || vt == (void *)(g_gameUiBase + RVA_FRAMEBUTTON_VTABLE);
+}
+
+static int IsComboBoxButton(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_COMBOBOXBUTTON_VTABLE);
+}
+
+static int IsComboField(void *thisPtr)
+{
+    void *vt;
+    if (thisPtr == NULL || g_gameUiBase == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    return vt == (void *)(g_gameUiBase + RVA_COMBOBOX_VTABLE)
+        || vt == (void *)(g_gameUiBase + RVA_CLABELEDCOMBO_VTABLE);
+}
+
+static int IsStyledTextField(void *thisPtr)
+{
+    void *vt;
+    int w = 0, h = 0;
+    if (thisPtr == NULL || g_gameUiBase == NULL || g_GetSize == NULL) {
+        return 0;
+    }
+    vt = *(void **)thisPtr;
+    if (vt != (void *)(g_gameUiBase + RVA_COMBOBOX_VTABLE)
+        && vt != (void *)(g_gameUiBase + RVA_CLABELEDCOMBO_VTABLE)
+        && vt != (void *)(g_gameUiBase + RVA_CCVARTEXTENTRY_VTABLE)
+        && vt != (void *)(g_gameUiBase + RVA_TEXTENTRY_VTABLE)) {
+        return 0;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    return w >= 32 && h >= 14 && h <= 48;
 }
 
 static int IsStaticTextPanel(void *thisPtr)
@@ -996,6 +1044,28 @@ static void PaintControlPlate(void *thisPtr)
     EnsureSurfaceHooks();
     r = CapsuleRadius(w, h);
     rgb = ControlIsHot(thisPtr) ? g_theme.accentRgb : g_theme.trackRgb;
+    DrawAaRoundedFillAt(0, 0, w, h, r, rgb, g_theme.windowRgb, 1, 1);
+}
+
+static void PaintFieldPlate(void *thisPtr)
+{
+    int w = 0, h = 0;
+    int r;
+    uint32_t rgb;
+    if (g_GetSize == NULL) {
+        return;
+    }
+    g_GetSize(thisPtr, &w, &h);
+    if (w < 8 || h < 8) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    r = CapsuleRadius(w, h);
+    if (!PanelIsEnabled(thisPtr)) {
+        rgb = g_theme.mutedRgb;
+    } else {
+        rgb = g_theme.trackRgb;
+    }
     DrawAaRoundedFillAt(0, 0, w, h, r, rgb, g_theme.windowRgb, 1, 1);
 }
 
@@ -1644,6 +1714,24 @@ static void DrawRowChevron(int w, int h)
     }
 }
 
+static void DrawComboCaret(int w, int h)
+{
+    int cx;
+    int cy;
+    int i;
+    unsigned int col;
+    if (w < 24 || h < 12) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    col = ThemeRgbPacked(g_theme.mutedRgb);
+    cx = w - 14;
+    cy = h / 2;
+    for (i = 0; i < 5; i++) {
+        SurfaceFill(cx - 4 + i, cy - 2 + i, cx + 5 - i, cy - 1 + i, col);
+    }
+}
+
 static int ShouldRoundButton(void *thisPtr)
 {
     int w = 0, h = 0;
@@ -2047,6 +2135,13 @@ static void __fastcall DrawFilledRect_Hook(void *surf, void *edx, int x0, int y0
     int roundTop;
     int roundBottom;
     (void)edx;
+    if (g_fieldSkipFill && x0 <= 1 && y0 <= 1 && g_roundW > 0 && g_roundH > 0) {
+        rw = x1 - x0;
+        rh = y1 - y0;
+        if (rw >= g_roundW - 2 && rh >= g_roundH - 2) {
+            return;
+        }
+    }
     if (InterlockedCompareExchange(&g_inOurDraw, 0, 0) != 0 || !g_roundActive ||
         g_origDrawFilledRect == NULL) {
         if (g_origDrawFilledRect != NULL) {
@@ -2238,6 +2333,41 @@ static void RunRoundedBackground(void *thisPtr, PaintFn orig)
     orig(thisPtr);
 }
 
+static void __fastcall TextEntryPaintBg_Hook(void *thisPtr)
+{
+    int combo;
+    int w = 0, h = 0;
+
+    __try {
+        combo = IsComboField(thisPtr);
+        if (combo || IsStyledTextField(thisPtr)) {
+            EnsureSurfaceHooks();
+            *(void **)((char *)thisPtr + OFF_PANEL_BORDER) = NULL;
+            SetFgColorWhite(thisPtr);
+            PaintFieldPlate(thisPtr);
+            if (g_GetSize != NULL) {
+                g_GetSize(thisPtr, &w, &h);
+            }
+            g_roundW = w;
+            g_roundH = h;
+            g_fieldSkipFill = 1;
+            if (g_origTextEntryPaintBg != NULL) {
+                g_origTextEntryPaintBg(thisPtr);
+            }
+            g_fieldSkipFill = 0;
+            if (combo) {
+                DrawComboCaret(w, h);
+            }
+            return;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_fieldSkipFill = 0;
+    }
+    if (g_origTextEntryPaintBg != NULL) {
+        g_origTextEntryPaintBg(thisPtr);
+    }
+}
+
 static void InstallNearHook(BYTE *target, unsigned stolen, const BYTE *expected,
                             BYTE *tramp, unsigned trampSize, void *hookFn, PaintFn *outOrig, const char *tag)
 {
@@ -2280,6 +2410,9 @@ static void InstallNearHook(BYTE *target, unsigned stolen, const BYTE *expected,
 static void __fastcall PanelPaintBg_Hook(void *thisPtr)
 {
     int w = 0, h = 0;
+    if (IsComboBoxButton(thisPtr)) {
+        return;
+    }
     /* Frame::PaintBackground calls this directly. Don't nest another
      * rounded pass — the Frame hook already owns the plate. */
     if (g_roundActive) {
@@ -2642,6 +2775,9 @@ static void __fastcall ButtonPaint_Hook(void *thisPtr)
 
     if (IsTitleCloseButton(thisPtr)) {
         PaintMacCloseDot(thisPtr);
+        return;
+    }
+    if (IsComboBoxButton(thisPtr)) {
         return;
     }
     if (IsFrameSystemButton(thisPtr)) {
@@ -3132,6 +3268,9 @@ static void __fastcall ImagePanelPaintBg_Hook(void *thisPtr)
 
 static void __fastcall PaintBorder_Hook(void *thisPtr)
 {
+    if (IsComboBoxButton(thisPtr) || IsStyledTextField(thisPtr)) {
+        return;
+    }
     if (IsSettingsToggle(thisPtr)) {
         return;
     }
@@ -3262,6 +3401,17 @@ void RoundFrame_Init(HMODULE hOriginalGameUI)
         InstallNearHook(base + RVA_CROSSHAIRIMAGE_PAINT, 6, kXhPaintPrologue,
                         g_crosshairPaintTramp, sizeof(g_crosshairPaintTramp),
                         (void *)CrosshairPaint_Hook, &g_origCrosshairPaint, "CrosshairImagePaint");
+    }
+    {
+        /* sub esp,20; push esi; mov esi,ecx; push edi — do not steal the
+         * following 8B 06 (mov eax,[esi]); an 8-byte patch split it. */
+        static const BYTE kTextEntryBgPrologue[7] = {
+            0x83, 0xEC, 0x20, 0x56, 0x8B, 0xF1, 0x57
+        };
+        InstallNearHook(base + RVA_TEXTENTRY_PAINTBG, 7, kTextEntryBgPrologue,
+                        g_textEntryPaintBgTramp, sizeof(g_textEntryPaintBgTramp),
+                        (void *)TextEntryPaintBg_Hook, &g_origTextEntryPaintBg,
+                        "TextEntryPaintBackground");
     }
 
     /* Default/OK buttons and tabs draw a dotted inset rect on focus.

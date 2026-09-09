@@ -1069,6 +1069,17 @@ static void PaintFieldPlate(void *thisPtr)
     DrawAaRoundedFillAt(0, 0, w, h, r, rgb, g_theme.windowRgb, 1, 1);
 }
 
+void RoundFrame_FillCapsule(int x, int y, int w, int h, unsigned int rgb)
+{
+    int r;
+    if (w < 8 || h < 8) {
+        return;
+    }
+    EnsureSurfaceHooks();
+    r = CapsuleRadius(w, h);
+    DrawAaRoundedFillAt(x, y, w, h, r, rgb, g_theme.windowRgb, 1, 1);
+}
+
 static int IsMouseToggleName(const char *name)
 {
     if (name == NULL || name[0] == '\0') {

@@ -11,6 +11,7 @@ void RoundFrame_Init(HMODULE hOriginalGameUI);
 void RoundFrame_SetDragValueLabel(void *label, int restX, int restY);
 void RoundFrame_PaintOptionsSlider(void *slider);
 void RoundFrame_NoteVoiceTrackW(int wide);
+void RoundFrame_FillCapsule(int x, int y, int w, int h, unsigned int rgb);
 
 /* One pill for every Options toggle (Advanced is the source). */
 #define OPTIONS_TOGGLE_TRACK_W 36

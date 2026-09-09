@@ -180,6 +180,7 @@ static void ForceSchemeLogoSize(const char *path, int wide, int tall);
                                                      * before it (vt+0x2a0, RVA 0x3f930) is SetArmed: it writes this+0xC2
                                                      * then plays the word-at-this+0x100 armed sound if the name isn't -1. */
 #define ITEM_VTABLE_ISDEPRESSED_OFFSET       0x2a8 /* Button::IsDepressed -- `mov al,[ecx+0xC3]; ret`, same getter family */
+#define ITEM_VTABLE_ISSELECTED_OFFSET        0x2b8
 #define ITEM_VTABLE_SETDEFAULTCOLOR_OFFSET   0x2ec /* Button::SetDefaultColor(Color fg, Color bg) -- two dwords, stores +0xE4/+0xE8 */
 #define ITEM_VTABLE_SETARMEDCOLOR_OFFSET     0x2f0 /* Button::SetArmedColor(Color fg, Color bg) -- same shape, stores +0xEC/+0xF0 */
 #define ITEM_VTABLE_SETSELECTEDCOLOR_OFFSET  0x2f4 /* stores +0xF4/+0xF8 -- GetButtonBgColor uses +0xF8 while depressed */
@@ -1314,6 +1315,24 @@ static void ClearStockItemFill(void *item)
     setActivationType(item, BUTTON_ACTIVATE_ONPRESSEDANDRELEASED);
 }
 
+static void MakeItemFillTransparent(void *item)
+{
+    void **vtable;
+    SetTwoColorsFn setDefaultColor;
+    SetTwoColorsFn setArmedColor;
+    SetTwoColorsFn setSelectedColor;
+    if (item == NULL) {
+        return;
+    }
+    vtable = *(void ***)item;
+    setDefaultColor = (SetTwoColorsFn)vtable[ITEM_VTABLE_SETDEFAULTCOLOR_OFFSET / sizeof(void *)];
+    setArmedColor = (SetTwoColorsFn)vtable[ITEM_VTABLE_SETARMEDCOLOR_OFFSET / sizeof(void *)];
+    setSelectedColor = (SetTwoColorsFn)vtable[ITEM_VTABLE_SETSELECTEDCOLOR_OFFSET / sizeof(void *)];
+    setDefaultColor(item, COLOR_WHITE_OPAQUE, COLOR_TRANSPARENT);
+    setArmedColor(item, COLOR_WHITE_OPAQUE, COLOR_TRANSPARENT);
+    setSelectedColor(item, COLOR_WHITE_OPAQUE, COLOR_TRANSPARENT);
+}
+
 static int ItemIsArmedQuiet(void *item)
 {
     void **vtable;
@@ -1335,6 +1354,18 @@ static int ItemIsDepressedQuiet(void *item)
     }
     vtable = *(void ***)item;
     fn = (IsArmedFn)vtable[ITEM_VTABLE_ISDEPRESSED_OFFSET / sizeof(void *)];
+    return fn(item) != 0;
+}
+
+static int ItemIsSelectedQuiet(void *item)
+{
+    void **vtable;
+    IsArmedFn fn;
+    if (item == NULL) {
+        return 0;
+    }
+    vtable = *(void ***)item;
+    fn = (IsArmedFn)vtable[ITEM_VTABLE_ISSELECTED_OFFSET / sizeof(void *)];
     return fn(item) != 0;
 }
 
@@ -1582,6 +1613,38 @@ static void DrawItemBackdrops(void *thisPtr)
     }
 }
 
+static void DrawComboMenuHighlights(void *thisPtr)
+{
+    void *visibleItems[64];
+    int visibleCount;
+    int i;
+    const OverlayTheme *theme;
+
+    if (g_GetPos == NULL || g_GetSize == NULL) {
+        return;
+    }
+    theme = UiTheme_Current();
+    visibleCount = CollectVisibleItems(thisPtr, visibleItems, 64);
+    for (i = 0; i < visibleCount; i++) {
+        int x = 0, y = 0, w = 0, h = 0;
+        int hot;
+        hot = ItemIsArmedQuiet(visibleItems[i])
+            || ItemIsDepressedQuiet(visibleItems[i])
+            || ItemIsSelectedQuiet(visibleItems[i]);
+        if (!hot) {
+            MakeItemFillTransparent(visibleItems[i]);
+            continue;
+        }
+        MakeItemFillTransparent(visibleItems[i]);
+        g_GetPos(visibleItems[i], &x, &y);
+        g_GetSize(visibleItems[i], &w, &h);
+        if (w < 12 || h < 10) {
+            continue;
+        }
+        RoundFrame_FillCapsule(x, y, w, h, theme->accentRgb);
+    }
+}
+
 static void __fastcall PaintBackground_Hook(void *thisPtr)
 {
     if (InterlockedCompareExchange(&g_paintDisabled, 0, 0) != 0) {
@@ -1594,6 +1657,10 @@ static void __fastcall PaintBackground_Hook(void *thisPtr)
     if (!IsMainMenuPanel(thisPtr)) {
         if (g_origPaintBackground != NULL) {
             g_origPaintBackground(thisPtr);
+        }
+        __try {
+            DrawComboMenuHighlights(thisPtr);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
         return;
     }
@@ -2270,6 +2337,7 @@ static void LayoutHook_Inner(void *thisPtr)
 
         int gy = 0;
         for (gv = 0; gv < visibleCount; gv++) {
+            MakeItemFillTransparent(visibleItems[gv]);
             g_SetPos(visibleItems[gv], genericMarginX, gy);
             if (g_SetSize != NULL && genericItemWide > 0) {
                 g_SetSize(visibleItems[gv], genericItemWide, itemHeight);

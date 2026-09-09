@@ -87,6 +87,7 @@ typedef void(__thiscall *SetDrawWidthFn)(void *image, int width);
 #define RVA_CCVARSLIDER_APPLY     0x00030450u /* CCvarSlider::ApplyChanges — this GameUI uses Cvar_SetValue */
 #define RVA_ENGINE                0x000C3C9Cu
 #define ENG_CLIENTCMD             20
+#define ENG_GETCVARFLOAT          15
 #define OFF_SLIDER_NOB0           0x74
 #define OFF_SLIDER_NOB1           0x78
 #define OFF_SLIDER_DRAGGING       0x71
@@ -156,6 +157,7 @@ static PaintFn g_origSliderPaintBg = NULL;
 static PaintFn g_origCvarSliderApply = NULL;
 static PaintFn g_origCrosshairPaint = NULL;
 static PaintFn g_origTextEntryPaintBg = NULL;
+static int g_xhTranslucentUi = -1;
 static BYTE g_panelPaintBgTramp[32];
 static BYTE g_buttonPaintTramp[32];
 static BYTE g_framePaintBgTramp[32];
@@ -701,6 +703,32 @@ static void EngineClientCmd(const char *cmd)
     }
 }
 
+static int CrosshairCvarOn(const char *name)
+{
+    void **eng;
+    typedef float (*GetCvarFloatFn)(const char *n);
+    GetCvarFloatFn fn;
+    if (g_gameUiBase == NULL || name == NULL) {
+        return 0;
+    }
+    if (IsBadReadPtr(g_gameUiBase + RVA_ENGINE, sizeof(void *))) {
+        return 0;
+    }
+    eng = *(void ***)(g_gameUiBase + RVA_ENGINE);
+    if (eng == NULL || IsBadReadPtr(eng, (ENG_GETCVARFLOAT + 1) * sizeof(void *))) {
+        return 0;
+    }
+    fn = (GetCvarFloatFn)eng[ENG_GETCVARFLOAT];
+    if (fn == NULL) {
+        return 0;
+    }
+    __try {
+        return fn(name) != 0.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
 static void __fastcall CvarSliderApply_Hook(void *thisPtr)
 {
     int ival;
@@ -1202,6 +1230,9 @@ static void DrawToggleSwitch(void *thisPtr)
     }
     EnsureSurfaceHooks();
     on = VtableFlag(thisPtr, OFF_BUTTON_ISSELECTED_VT);
+    if (IsSettingsToggle(thisPtr)) {
+        g_xhTranslucentUi = on ? 1 : 0;
+    }
     trackH = OPTIONS_TOGGLE_TRACK_H;
     trackW = OPTIONS_TOGGLE_TRACK_W;
     knob = OPTIONS_TOGGLE_KNOB;
@@ -2986,40 +3017,68 @@ static void __fastcall ProgressPaintBg_Hook(void *thisPtr)
     }
 }
 
+#define OFF_CROSSHAIR_R   0x88
+#define OFF_CROSSHAIR_G   0x8C
+#define OFF_CROSSHAIR_B   0x90
 #define OFF_CROSSHAIR_BAR 0x94
 #define OFF_CROSSHAIR_GAP 0x98
+
+static void DrawCrosshairBars(int w, int h, int bar, int gap, unsigned int packed)
+{
+    int cx;
+    int cy;
+
+    if (w < 8 || h < 8 || bar < 1) {
+        return;
+    }
+    if (gap < 0) {
+        gap = 0;
+    }
+    cx = w / 2;
+    cy = h / 2;
+    EnsureSurfaceHooks();
+    SurfaceFill(cx - gap - bar, cy, cx - gap, cy + 1, packed);
+    SurfaceFill(cx + gap, cy, cx + gap + bar, cy + 1, packed);
+    SurfaceFill(cx, cy - gap - bar, cx + 1, cy - gap, packed);
+    SurfaceFill(cx, cy + gap, cx + 1, cy + gap + bar, packed);
+}
 
 static void __fastcall CrosshairPaint_Hook(void *thisPtr)
 {
     int w = 0, h = 0;
-    int *bar;
-    int *gap;
+    int bar;
+    int gap;
     int oldBar;
     int oldGap;
+    int oldR;
+    int oldG;
+    int oldB;
     int maxR;
     int largeNeed;
     int sw = 0;
     int sh = 0;
+    int trans;
+    uint32_t rgb;
+    unsigned int packed;
 
-    if (g_origCrosshairPaint == NULL) {
-        return;
-    }
     if (thisPtr == NULL || g_GetSize == NULL) {
-        g_origCrosshairPaint(thisPtr);
+        if (g_origCrosshairPaint != NULL) {
+            g_origCrosshairPaint(thisPtr);
+        }
         return;
     }
     g_GetSize(thisPtr, &w, &h);
-    bar = (int *)((char *)thisPtr + OFF_CROSSHAIR_BAR);
-    gap = (int *)((char *)thisPtr + OFF_CROSSHAIR_GAP);
-    oldBar = *bar;
-    oldGap = *gap;
+    oldBar = *(int *)((char *)thisPtr + OFF_CROSSHAIR_BAR);
+    oldGap = *(int *)((char *)thisPtr + OFF_CROSSHAIR_GAP);
+    oldR = *(int *)((char *)thisPtr + OFF_CROSSHAIR_R);
+    oldG = *(int *)((char *)thisPtr + OFF_CROSSHAIR_G);
+    oldB = *(int *)((char *)thisPtr + OFF_CROSSHAIR_B);
+    bar = oldBar;
+    gap = oldGap;
     maxR = ((w < h) ? w : h) / 2 - 2;
     if (maxR < 4) {
         maxR = 4;
     }
-    /* Stock Large is (9+5)*screenWide/640. Clamping each size to maxR
-     * separately made Medium and Large identical on 4:3. Scale everything
-     * by the same factor so Small < Medium < Large still reads. */
     largeNeed = oldBar + oldGap;
     if (g_GetSurface != NULL) {
         void *surf = g_GetSurface();
@@ -3038,18 +3097,27 @@ static void __fastcall CrosshairPaint_Hook(void *thisPtr)
         }
     }
     if (largeNeed > maxR && largeNeed > 0) {
-        *bar = oldBar * maxR / largeNeed;
-        *gap = oldGap * maxR / largeNeed;
-        if (*bar < 1) {
-            *bar = 1;
+        bar = oldBar * maxR / largeNeed;
+        gap = oldGap * maxR / largeNeed;
+        if (bar < 1) {
+            bar = 1;
         }
-        if (*gap < 0) {
-            *gap = 0;
+        if (gap < 0) {
+            gap = 0;
         }
     }
-    g_origCrosshairPaint(thisPtr);
-    *bar = oldBar;
-    *gap = oldGap;
+    trans = g_xhTranslucentUi;
+    if (trans < 0) {
+        trans = CrosshairCvarOn("cl_crosshair_translucent");
+    }
+    rgb = ((uint32_t)oldR << 16) | ((uint32_t)oldG << 8) | (uint32_t)oldB;
+    /* Draw ourselves: engine FillRGBABlend on a dark sheet hides the toggle. */
+    if (!trans) {
+        packed = ThemeRgbPacked(rgb);
+    } else {
+        packed = MixRgbPair(rgb, g_theme.windowRgb, 0.40f);
+    }
+    DrawCrosshairBars(w, h, bar, gap, packed);
 }
 
 static float DistPointToSeg(float px, float py, float x0, float y0, float x1, float y1, float *outT)

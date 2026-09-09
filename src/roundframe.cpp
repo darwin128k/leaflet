@@ -1983,6 +1983,78 @@ static void SurfaceFill(int x0, int y0, int x1, int y1, unsigned int packedRgba)
     InterlockedDecrement(&g_inOurDraw);
 }
 
+static uint32_t *g_cvBits = NULL;
+static int g_cvCap = 0;
+static int g_cvW = 0;
+static int g_cvH = 0;
+
+static int CanvasBegin(int w, int h)
+{
+    int n;
+    if (w < 1 || h < 1 || w > 1024 || h > 1024) {
+        return 0;
+    }
+    n = w * h;
+    if (g_cvCap < n) {
+        uint32_t *p = (uint32_t *)realloc(g_cvBits, (size_t)n * 4u);
+        if (p == NULL) {
+            return 0;
+        }
+        g_cvBits = p;
+        g_cvCap = n;
+    }
+    g_cvW = w;
+    g_cvH = h;
+    memset(g_cvBits, 0, (size_t)n * 4u);
+    return 1;
+}
+
+static void CanvasPlot(int x, int y, unsigned int packed)
+{
+    if ((unsigned)x >= (unsigned)g_cvW || (unsigned)y >= (unsigned)g_cvH) {
+        return;
+    }
+    g_cvBits[y * g_cvW + x] = packed | 0xFF000000u;
+}
+
+static void CanvasFlush(int destX, int destY)
+{
+    void *surf;
+    int y;
+    EnsureSurfaceHooks();
+    if (g_origDrawFilledRect == NULL || g_origDrawSetColor == NULL || g_GetSurface == NULL) {
+        return;
+    }
+    surf = g_GetSurface();
+    if (surf == NULL) {
+        return;
+    }
+    InterlockedIncrement(&g_inOurDraw);
+    for (y = 0; y < g_cvH; y++) {
+        const uint32_t *row = g_cvBits + y * g_cvW;
+        int x = 0;
+        while (x < g_cvW) {
+            unsigned int c;
+            int x1;
+            while (x < g_cvW && (row[x] >> 24) < 8u) {
+                x++;
+            }
+            if (x >= g_cvW) {
+                break;
+            }
+            c = row[x];
+            x1 = x + 1;
+            while (x1 < g_cvW && row[x1] == c) {
+                x1++;
+            }
+            g_origDrawSetColor(surf, c);
+            g_origDrawFilledRect(surf, destX + x, destY + y, destX + x1, destY + y + 1);
+            x = x1;
+        }
+    }
+    InterlockedDecrement(&g_inOurDraw);
+}
+
 static void DrawRoundedFillAt(int x0, int y0, int w, int h, int r, unsigned int packedRgba,
                               int roundTop, int roundBottom)
 {
@@ -2577,48 +2649,37 @@ static void DrawAaDiskOnTrack(int x0, int y0, int d, uint32_t rgb, int trackY, i
     float rad;
     int px;
     int py;
-    int sr;
-    int sg;
-    int sb;
 
-    if (d < 4) {
+    if (d < 4 || !CanvasBegin(d, d)) {
         return;
     }
-    cx = (float)x0 + (float)d * 0.5f;
-    cy = (float)y0 + (float)d * 0.5f;
-    rad = (float)d * 0.5f - 0.35f;
-    sr = (int)((rgb >> 16) & 0xFFu);
-    sg = (int)((rgb >> 8) & 0xFFu);
-    sb = (int)(rgb & 0xFFu);
-    for (py = y0; py < y0 + d; py++) {
-        for (px = x0; px < x0 + d; px++) {
+    cx = (float)d * 0.5f;
+    cy = (float)d * 0.5f;
+    rad = cx - 0.35f;
+    for (py = 0; py < d; py++) {
+        for (px = 0; px < d; px++) {
             float dx = ((float)px + 0.5f) - cx;
             float dy = ((float)py + 0.5f) - cy;
             float dist = (float)sqrt(dx * dx + dy * dy);
             float a = (rad + 1.15f) - dist;
             uint32_t bgRgb;
-            int br, bg, bb, or_, og, ob;
+            int gy = y0 + py;
+            int gx = x0 + px;
             if (a <= 0.0f) {
                 continue;
             }
             if (a > 1.0f) {
                 a = 1.0f;
             }
-            if (py >= trackY && py < trackY + trackH) {
-                bgRgb = (px < splitX) ? accentRgb : trackRgb;
+            if (gy >= trackY && gy < trackY + trackH) {
+                bgRgb = (gx < splitX) ? accentRgb : trackRgb;
             } else {
                 bgRgb = windowRgb;
             }
-            br = (int)((bgRgb >> 16) & 0xFFu);
-            bg = (int)((bgRgb >> 8) & 0xFFu);
-            bb = (int)(bgRgb & 0xFFu);
-            or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
-            og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
-            ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
-            SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(
-                ((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob));
+            CanvasPlot(px, py, MixRgbPair(rgb, bgRgb, a));
         }
     }
+    CanvasFlush(x0, y0);
 }
 
 static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bgRgb)
@@ -2638,26 +2699,28 @@ static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bg
     if ((h & 1) != 0) {
         h -= 1;
     }
+    if (!CanvasBegin(w, h)) {
+        DrawPillAt(x0, y0, w, h, rgb);
+        return;
+    }
     r = (float)h * 0.5f;
     rad = r - 0.35f;
-    cxL = (float)x0 + r;
-    cxR = (float)x0 + (float)w - r;
-    cy = (float)y0 + r;
-    for (py = y0; py < y0 + h; py++) {
-        for (px = x0; px < x0 + w; px++) {
+    cxL = r;
+    cxR = (float)w - r;
+    cy = r;
+    for (py = 0; py < h; py++) {
+        for (px = 0; px < w; px++) {
             float qx = (float)px + 0.5f;
             float qy = (float)py + 0.5f;
-            float dx;
-            float dy;
             float dist;
             float a;
             if (qx < cxL) {
-                dx = qx - cxL;
-                dy = qy - cy;
+                float dx = qx - cxL;
+                float dy = qy - cy;
                 dist = (float)sqrt(dx * dx + dy * dy);
             } else if (qx > cxR) {
-                dx = qx - cxR;
-                dy = qy - cy;
+                float dx = qx - cxR;
+                float dy = qy - cy;
                 dist = (float)sqrt(dx * dx + dy * dy);
             } else {
                 dist = (float)fabs(qy - cy);
@@ -2669,9 +2732,10 @@ static void DrawAaPillAt(int x0, int y0, int w, int h, uint32_t rgb, uint32_t bg
             if (a > 1.0f) {
                 a = 1.0f;
             }
-            SurfaceFill(px, py, px + 1, py + 1, MixRgbPair(rgb, bgRgb, a));
+            CanvasPlot(px, py, MixRgbPair(rgb, bgRgb, a));
         }
     }
+    CanvasFlush(x0, y0);
 }
 
 static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rgb, uint32_t bgRgb,
@@ -2683,6 +2747,10 @@ static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rg
     int py;
 
     if (w <= 0 || h <= 0) {
+        return;
+    }
+    if (w * h > 180 * 48 || !CanvasBegin(w, h)) {
+        DrawRoundedFillAt(x0, y0, w, h, r, ThemeRgbPacked(rgb), roundTop, roundBottom);
         return;
     }
     topR = roundTop ? r : 0;
@@ -2702,46 +2770,38 @@ static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rg
             botR = cap;
         }
     }
-    if (topR < 2 && botR < 2) {
-        SurfaceFill(x0, y0, x0 + w, y0 + h, ThemeRgbPacked(rgb));
-        return;
-    }
-    for (py = y0; py < y0 + h; py++) {
-        for (px = x0; px < x0 + w; px++) {
+    for (py = 0; py < h; py++) {
+        for (px = 0; px < w; px++) {
             float qx = (float)px + 0.5f;
             float qy = (float)py + 0.5f;
-            float xL = (float)x0;
-            float yT = (float)y0;
-            float xR = (float)(x0 + w);
-            float yB = (float)(y0 + h);
             float cr = 0.0f;
             float cx = 0.0f;
             float cy = 0.0f;
             int corner = 0;
             float a;
-            if (topR > 0 && qy < yT + (float)topR) {
-                if (qx < xL + (float)topR) {
+            if (topR > 0 && qy < (float)topR) {
+                if (qx < (float)topR) {
                     corner = 1;
                     cr = (float)topR;
-                    cx = xL + cr;
-                    cy = yT + cr;
-                } else if (qx >= xR - (float)topR) {
+                    cx = cr;
+                    cy = cr;
+                } else if (qx >= (float)(w - topR)) {
                     corner = 1;
                     cr = (float)topR;
-                    cx = xR - cr;
-                    cy = yT + cr;
+                    cx = (float)w - cr;
+                    cy = cr;
                 }
-            } else if (botR > 0 && qy >= yB - (float)botR) {
-                if (qx < xL + (float)botR) {
+            } else if (botR > 0 && qy >= (float)(h - botR)) {
+                if (qx < (float)botR) {
                     corner = 1;
                     cr = (float)botR;
-                    cx = xL + cr;
-                    cy = yB - cr;
-                } else if (qx >= xR - (float)botR) {
+                    cx = cr;
+                    cy = (float)h - cr;
+                } else if (qx >= (float)(w - botR)) {
                     corner = 1;
                     cr = (float)botR;
-                    cx = xR - cr;
-                    cy = yB - cr;
+                    cx = (float)w - cr;
+                    cy = (float)h - cr;
                 }
             }
             if (corner) {
@@ -2759,9 +2819,10 @@ static void DrawAaRoundedFillAt(int x0, int y0, int w, int h, int r, uint32_t rg
             } else {
                 a = 1.0f;
             }
-            SurfaceFill(px, py, px + 1, py + 1, MixRgbPair(rgb, bgRgb, a));
+            CanvasPlot(px, py, MixRgbPair(rgb, bgRgb, a));
         }
     }
+    CanvasFlush(x0, y0);
 }
 
 static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb)
@@ -2771,47 +2832,29 @@ static void DrawAaDisk(int x0, int y0, int d, uint32_t rgb, uint32_t bgRgb)
     float rad;
     int px;
     int py;
-    int sr;
-    int sg;
-    int sb;
-    int br;
-    int bg;
-    int bb;
 
-    if (d < 4) {
+    if (d < 4 || !CanvasBegin(d, d)) {
         return;
     }
-    cx = (float)x0 + (float)d * 0.5f;
-    cy = (float)y0 + (float)d * 0.5f;
-    rad = (float)d * 0.5f - 0.35f;
-    sr = (int)((rgb >> 16) & 0xFFu);
-    sg = (int)((rgb >> 8) & 0xFFu);
-    sb = (int)(rgb & 0xFFu);
-    br = (int)((bgRgb >> 16) & 0xFFu);
-    bg = (int)((bgRgb >> 8) & 0xFFu);
-    bb = (int)(bgRgb & 0xFFu);
-    for (py = y0; py < y0 + d; py++) {
-        for (px = x0; px < x0 + d; px++) {
+    cx = (float)d * 0.5f;
+    cy = (float)d * 0.5f;
+    rad = cx - 0.35f;
+    for (py = 0; py < d; py++) {
+        for (px = 0; px < d; px++) {
             float dx = ((float)px + 0.5f) - cx;
             float dy = ((float)py + 0.5f) - cy;
             float dist = (float)sqrt(dx * dx + dy * dy);
             float a = (rad + 1.15f) - dist;
-            int or_;
-            int og;
-            int ob;
             if (a <= 0.0f) {
                 continue;
             }
             if (a > 1.0f) {
                 a = 1.0f;
             }
-            or_ = (int)((float)sr * a + (float)br * (1.0f - a) + 0.5f);
-            og = (int)((float)sg * a + (float)bg * (1.0f - a) + 0.5f);
-            ob = (int)((float)sb * a + (float)bb * (1.0f - a) + 0.5f);
-            SurfaceFill(px, py, px + 1, py + 1, ThemeRgbPacked(
-                ((unsigned)or_ << 16) | ((unsigned)og << 8) | (unsigned)ob));
+            CanvasPlot(px, py, MixRgbPair(rgb, bgRgb, a));
         }
     }
+    CanvasFlush(x0, y0);
 }
 
 static void __fastcall ButtonPaint_Hook(void *thisPtr)
